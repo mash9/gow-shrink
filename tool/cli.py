@@ -1,9 +1,11 @@
 """gow-shrink command-line tool.
 
     python -m tool scan    <texpack|dir>... [--drop N] [--max-res R] [--min-res R]
-    python -m tool shrink  <texpack|dir>... (--out DIR | --in-place --backup DIR) [...]
+    python -m tool shrink  <texpack|dir>... (--out DIR | --in-place [--backup DIR]) [...]
     python -m tool verify  <texpack|dir>...
-    python -m tool restore --backup DIR
+    python -m tool shvol   <wad dir> [--backup DIR] [--dry-run]
+    python -m tool lang    <exec dir> [--keep LANG]... [--keep-for CODE]... [--backup DIR] [--dry-run]
+    python -m tool restore --backup DIR [names...]
 """
 
 from __future__ import annotations
@@ -241,6 +243,17 @@ def cmd_restore(args) -> int:
             print(f'[SKIP] {name}: not in manifest')
             continue
         bpack = os.path.join(args.backup, name)
+        if info.get('kind') == 'dir':
+            target = info['target']
+            if not os.path.isdir(bpack) or os.path.exists(target):
+                print(f'[FAIL] {name}: backup folder missing or target already exists')
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.move(bpack, target)
+            del m['files'][name]
+            _save_manifest(args.backup, m)
+            print(f'[RESTORED] {name} -> {target}')
+            continue
         target = os.path.join(info['target_dir'], name)
         if not os.path.exists(bpack) or os.path.getsize(bpack) != info['size']:
             print(f'[FAIL] {name}: backup file missing or size mismatch')
@@ -251,128 +264,6 @@ def cmd_restore(args) -> int:
         del m['files'][name]
         _save_manifest(args.backup, m)
         print(f'[RESTORED] {name} -> {target}')
-    return 0
-
-
-def cmd_lod0(args) -> int:
-    from . import lod as lodmod
-
-    wad_dir = args.dir
-    lod = lodmod.load_lod_hashes(wad_dir)
-    print(f'lodpack entries: {len(lod)}')
-    manifest = None
-    if not args.dry_run:
-        os.makedirs(args.backup, exist_ok=True)
-        manifest = _load_manifest(args.backup)
-
-    stats: dict = {}
-    total_patches = files = 0
-    lod0_bytes = 0
-    wads = sorted(n for n in os.listdir(wad_dir) if n.endswith('.wad'))
-    for name in wads:
-        path = os.path.join(wad_dir, name)
-        if os.path.getsize(path) == 0:
-            continue
-        # Always rebuild from the pristine backup copy when there is one
-        bpath = os.path.join(args.backup, name)
-        src = bpath if os.path.exists(bpath) else path
-        with open(src, 'rb') as f:
-            buf = f.read()
-        patches = lodmod.find_patches(buf, lod, stats)
-        del buf
-        if not patches:
-            continue
-        files += 1
-        total_patches += len(patches)
-        lod0_bytes += sum(p.lod0_size for p in patches)
-        print(f'{name}: {len(patches)} meshes')
-        if args.dry_run:
-            continue
-
-        tmp = path + '.gowshrink.tmp'
-        lodmod.write_patched(src, tmp, patches)
-        errs = lodmod.verify_patched(src, tmp, patches)
-        if errs:
-            os.remove(tmp)
-            print(f'  [FAIL] {"; ".join(errs)}; original left untouched')
-            return 1
-        if src == path:
-            _move(path, bpath)
-            manifest['files'][name] = {'target_dir': os.path.abspath(wad_dir),
-                                       'size': os.path.getsize(bpath)}
-            _save_manifest(args.backup, manifest)
-        os.replace(tmp, path)
-
-    print()
-    print(f'wads patched: {files}, meshes patched: {total_patches}')
-    print('skipped/patched counts:', stats)
-    print(f'LOD0 data no longer referenced by patched meshes: {fmt_size(lod0_bytes)} '
-          f'(counted per wad, lodpack not modified)')
-    return 0
-
-
-def cmd_lod0_free(args) -> int:
-    from . import lod as lodmod
-
-    wad_dir = args.dir
-    entries = lodmod.lodpack_entries(wad_dir)
-    sizes = {h: e[2] for h, e in entries.items()}
-    originals = sorted(os.path.join(args.wad_backup, n) for n in os.listdir(args.wad_backup)
-                       if n.endswith('.wad'))
-    if not originals:
-        raise SystemExit(f'no original .wad files in {args.wad_backup}; run lod0 first')
-    pairs = lodmod.replaced_lod0(originals, sizes)
-    print(f'LOD0 entries replaced by lod0: {len(pairs)}')
-
-    wads = sorted(os.path.join(wad_dir, n) for n in os.listdir(wad_dir)
-                  if n.endswith('.wad') and os.path.getsize(os.path.join(wad_dir, n)))
-    watch = set(entries) | lodmod.lodpack_group_hashes(wad_dir)
-    refs = lodmod.referenced_hashes(wads, watch, progress=Progress('scanning wads'))
-
-    per_pack: dict[str, list[tuple[int, int]]] = collections.defaultdict(list)
-    skipped = collections.Counter()
-    for h0, h1s in pairs.items():
-        name, off, size, group = entries[h0]
-        if len(h1s) != 1:
-            skipped['several LOD1 targets'] += 1
-        elif refs.get(h0):
-            skipped['LOD0 still referenced'] += 1
-        elif refs.get(group):
-            skipped['whole group referenced'] += 1
-        else:
-            per_pack[name].append((off, size))
-    freed = sum(s for r in per_pack.values() for _, s in r)
-    print(f'skipped: {dict(skipped)}')
-    print(f'unreferenced LOD0 entries: {sum(len(r) for r in per_pack.values())}, {fmt_size(freed)}')
-    if args.dry_run:
-        return 0
-
-    os.makedirs(args.backup, exist_ok=True)
-    manifest = _load_manifest(args.backup)
-    before = after = 0
-    for name, ranges in sorted(per_pack.items()):
-        path = os.path.join(wad_dir, name)
-        bpath = os.path.join(args.backup, name)
-        src = bpath if os.path.exists(bpath) else path
-        tmp = path + '.gowshrink.tmp'
-        shutil.copyfile(src, tmp)
-        lodmod.zero_ranges_sparse(tmp, ranges)
-        errs = lodmod.verify_zeroed(src, tmp, ranges)
-        if errs:
-            os.remove(tmp)
-            print(f'[FAIL] {name}: {"; ".join(errs)}; original left untouched')
-            return 1
-        if src == path:
-            _move(path, bpath)
-            manifest['files'][name] = {'target_dir': os.path.abspath(wad_dir),
-                                       'size': os.path.getsize(bpath)}
-            _save_manifest(args.backup, manifest)
-        os.replace(tmp, path)
-        b, a = os.path.getsize(path), lodmod.size_on_disk(path)
-        before += b
-        after += a
-        print(f'{name}: {len(ranges)} entries zeroed, on disk {fmt_size(b)} -> {fmt_size(a)}')
-    print(f'total on disk {fmt_size(before)} -> {fmt_size(after)}')
     return 0
 
 
@@ -429,8 +320,88 @@ def cmd_shvol(args) -> int:
     return 0
 
 
+def cmd_lang(args) -> int:
+    from . import lang
+
+    exec_dir = args.exec_dir
+    installed = lang.installed_languages(exec_dir)
+    if not installed:
+        raise SystemExit(f'no language folders under {exec_dir} (expected the game\'s exec folder)')
+    table = lang.read_language_table(exec_dir)
+
+    keep = set()
+    for want in args.keep or []:
+        # accept the exact folder name or an unambiguous prefix ("english" -> "english(us)"),
+        # so callers can avoid parentheses that break batch-file launchers such as pyenv shims
+        matches = [n for n in installed if n.lower() == want.lower()] or \
+                  [n for n in installed if n.lower().startswith(want.lower())]
+        if len(matches) == 1:
+            keep.add(matches[0])
+        elif matches:
+            raise SystemExit(f'{want!r} is ambiguous: {", ".join(matches)}')
+        else:
+            keep.add(want)          # reported as "not installed" below
+    for code in args.keep_for or []:
+        try:
+            keep.add(lang.voice_folder_for(table, code))
+        except lang.LangError as e:
+            raise SystemExit(str(e))
+
+    if not keep:
+        print(f'{"voice language":24} {"size":>12}  folders')
+        for name, items in installed.items():
+            print(f'{name:24} {fmt_size(sum(s for _, s in items))}  {len(items)}')
+        if table:
+            print()
+            print('text language -> voice language:')
+            for t in table:
+                try:
+                    v = lang.voice_folder_for(table, t.code)
+                except lang.LangError:
+                    v = '?'
+                print(f'  {t.code:8} {t.name:14} -> {v}')
+        print()
+        print('choose what to keep with --keep <voice language> or --keep-for <text language code>')
+        return 0
+
+    unknown = keep - set(installed)
+    if unknown:
+        raise SystemExit(f'not installed: {", ".join(sorted(unknown))}; installed: {", ".join(installed)}')
+    remove = [n for n in installed if n not in keep]
+    if not remove:
+        print('nothing to remove')
+        return 0
+    freed = sum(s for n in remove for _, s in installed[n])
+    print(f'keep: {", ".join(sorted(keep))}')
+    print(f'remove: {", ".join(remove)} ({fmt_size(freed)})')
+    if args.dry_run:
+        return 0
+
+    manifest = None
+    if args.backup:
+        os.makedirs(args.backup, exist_ok=True)
+        manifest = _load_manifest(args.backup)
+    else:
+        print('no --backup given: language folders will be deleted')
+    for name in remove:
+        for path, size in installed[name]:
+            rel = os.path.relpath(path, exec_dir)
+            if args.backup:
+                dst = os.path.join(args.backup, rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(path, dst)
+                manifest['files'][rel] = {'kind': 'dir', 'target': os.path.abspath(path), 'size': size}
+                _save_manifest(args.backup, manifest)
+                print(f'  moved   {rel} ({fmt_size(size)})')
+            else:
+                shutil.rmtree(path)
+                print(f'  deleted {rel} ({fmt_size(size)})')
+    print(f'freed {fmt_size(freed)}' + (' (after deleting the backup folder)' if args.backup else ''))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m tool", description='God of War (PC) texpack size reduction tool')
+    ap = argparse.ArgumentParser(prog="python -m tool", description='God of War (PC) install size reduction tool')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     p = sub.add_parser('scan', help='report estimated sizes after removal')
@@ -454,27 +425,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--quick', action='store_true', help='skip block header checks')
     p.set_defaults(func=cmd_verify)
 
-    p = sub.add_parser('lod0', help='(experimental) make meshes use LOD1 in place of LOD0 by patching .wad files')
-    p.add_argument('dir', help='folder with .wad and .lodpack files (exec\\wad\\pc_le)')
-    p.add_argument('--backup', required=True, metavar='DIR', help='backup folder for original .wad files')
-    p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
-    p.set_defaults(func=cmd_lod0)
-
-    p = sub.add_parser('lod0-free', help='(experimental) free disk space of LOD0 data that lod0 made unused '
-                                         '(zeroed NTFS sparse ranges; offsets unchanged)')
-    p.add_argument('dir', help='folder with .wad and .lodpack files (exec\\wad\\pc_le)')
-    p.add_argument('--wad-backup', required=True, metavar='DIR',
-                   help='backup folder used by lod0 (holds the original .wad files)')
-    p.add_argument('--backup', required=True, metavar='DIR', help='backup folder for original .lodpack files')
-    p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
-    p.set_defaults(func=cmd_lod0_free)
-
     p = sub.add_parser('shvol', help='(experimental) halve the resolution of SH lighting volumes in .wad files')
     p.add_argument('dir', help='folder with .wad files (exec\\wad\\pc_le)')
     p.add_argument('--backup', metavar='DIR',
                    help='backup folder for original .wad files; without it originals are replaced')
     p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
     p.set_defaults(func=cmd_shvol)
+
+    p = sub.add_parser('lang', help='list voice languages, or remove all but the ones you keep')
+    p.add_argument('exec_dir', help="the game's exec folder (<GameDir>\\exec)")
+    p.add_argument('--keep', action='append', metavar='LANG',
+                   help='voice language folder to keep, e.g. "english(us)" (repeatable)')
+    p.add_argument('--keep-for', action='append', metavar='CODE',
+                   help='keep the voice used by this text language code, e.g. ko -> english(us) (repeatable)')
+    p.add_argument('--backup', metavar='DIR', help='move removed folders here instead of deleting them')
+    p.add_argument('--dry-run', action='store_true', help='print the plan without changing anything')
+    p.set_defaults(func=cmd_lang)
 
     p = sub.add_parser('restore', help='restore originals from the backup')
     p.add_argument('--backup', required=True, metavar='DIR')

@@ -18,8 +18,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .lod import iter_wad_entries
-
 HEADER = 0x60
 SH_NAME = re.compile(rb'^[0-9A-F]{8}SH\d+$')
 TAG_DESC = 0x0001
@@ -37,6 +35,16 @@ class ShVolError(Exception):
 
 def a16(n: int) -> int:
     return (n + 15) & ~15
+
+
+def iter_wad_entries(buf):
+    """Yield (offset, tag, size, name) for each wad entry."""
+    p, n = 0, len(buf)
+    while p + HEADER <= n:
+        tag, _, size = struct.unpack_from('<HHI', buf, p)
+        name = bytes(buf[p + 0x18:p + 0x50]).split(b'\0')[0]
+        yield p, tag, size, name
+        p = a16(p + HEADER + size)
 
 
 def a8(n: int) -> int:
