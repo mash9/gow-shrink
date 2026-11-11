@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local docs, tests and Claude settings (not committed)
+docs/
+tests/
+CLAUDE.md
+
+# Temporary files and outputs produced by the tool
+*.gowshrink.tmp
+out/
+backup/
+
+# Game resources (never committed)
+*.texpack
+*.texpack.toc
+*.lodpack
+*.lodpack.toc
+*.wad
+*.wem
+*.bk2
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
