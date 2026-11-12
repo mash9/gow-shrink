@@ -14,22 +14,26 @@ Requires Python 3.11+ and NumPy (used by `shvol` only).
 
 ## Quick start
 
-Replace `<GameDir>` with your God of War install folder. Apply the steps one at a time on an unmodified install, and start the game after each step.
+Run the commands from the repository folder in Command Prompt. Replace `<GameDir>` with your God of War install folder (for example `C:\Games\God of War`) and `<BackupDir>` with a folder for backups. Keep the quotes, because the path may contain spaces. Apply the steps one at a time on an unmodified install, and start the game after each step.
 
-```powershell
-$exec = '<GameDir>\exec'
-$wad  = "$exec\wad\pc_le"
+1. Textures, about 34.6 GiB saved:
 
-# 1. Textures, about 34.6 GiB saved
-python -m tool shrink $wad --drop 2 --in-place
-python -m tool verify $wad
+   ```bat
+   python -m tool shrink "<GameDir>\exec\wad\pc_le" --drop 2 --in-place
+   python -m tool verify "<GameDir>\exec\wad\pc_le"
+   ```
 
-# 2. Voice languages, about 3.2 GiB saved (keeps only the English voice)
-python -m tool lang $exec --keep english
+2. Voice languages, about 3.2 GiB saved (keeps only the English voice):
 
-# 3. SH lighting volumes, about 2.1 GiB saved (experimental)
-python -m tool shvol $wad
-```
+   ```bat
+   python -m tool lang "<GameDir>\exec" --keep english
+   ```
+
+3. SH lighting volumes, about 2.1 GiB saved (experimental):
+
+   ```bat
+   python -m tool shvol "<GameDir>\exec\wad\pc_le"
+   ```
 
 Without `--backup`, these commands replace or delete game files directly. Run each one only once: `shrink` and `shvol` shrink already reduced files again on a second run. To get the original files back, reinstall or verify the game files with your launcher, or use `--backup` (see [Backup and restore](#backup-and-restore)).
 
@@ -44,15 +48,22 @@ Without `--backup`, these commands replace or delete game files directly. Run ea
 | **`--drop 2`** | **3.80 GiB** | **34.59 GiB** | 2048 → 512 | **Recommended.** Blurrier up close |
 | `--drop 3` | 2.92 GiB | 35.47 GiB | 2048 → 256 | Runs in game; little gain over `--drop 2` |
 
-```powershell
-# Estimate savings (does not touch any file)
-python -m tool scan $wad --drop 2
+Estimate savings (does not touch any file):
 
-# Try a single file, writing the result to another folder (originals untouched)
-python -m tool shrink "$wad\090_caldera_010.texpack" --drop 2 --out <OutputDir>
+```bat
+python -m tool scan "<GameDir>\exec\wad\pc_le" --drop 2
+```
 
-# Integrity check
-python -m tool verify $wad
+Try a single file, writing the result to another folder (originals untouched):
+
+```bat
+python -m tool shrink "<GameDir>\exec\wad\pc_le\090_caldera_010.texpack" --drop 2 --out "<OutputDir>"
+```
+
+Integrity check:
+
+```bat
+python -m tool verify "<GameDir>\exec\wad\pc_le"
 ```
 
 | Option | Meaning |
@@ -73,18 +84,28 @@ Per-language audio lives in `sound\pc_le\<language>\` and `wad\pc_le\soundbanks\
 
 Text languages without their own voice use another voice language, as mapped in `exec\languages\LANGS_*.txt`. For example, Korean, Dutch, Turkish, Czech, Hungarian, Croatian and Traditional Chinese text all use `english(us)`.
 
-```powershell
-# List installed voice languages and the text -> voice mapping
-python -m tool lang $exec
+List installed voice languages and the text -> voice mapping:
 
-# Keep only the English voice
-python -m tool lang $exec --keep english
+```bat
+python -m tool lang "<GameDir>\exec"
+```
 
-# Same result, chosen by text language code (Korean text uses the English voice)
-python -m tool lang $exec --keep-for ko
+Keep only the English voice:
 
-# Keep several and move the others to a backup folder
-python -m tool lang $exec --keep english --keep japanese --backup <BackupDir>\lang
+```bat
+python -m tool lang "<GameDir>\exec" --keep english
+```
+
+Same result, chosen by text language code (Korean text uses the English voice):
+
+```bat
+python -m tool lang "<GameDir>\exec" --keep-for ko
+```
+
+Keep several and move the others to a backup folder:
+
+```bat
+python -m tool lang "<GameDir>\exec" --keep english --keep japanese --backup "<BackupDir>\lang"
 ```
 
 - `--keep` accepts the folder name or any unambiguous start of it (`english` = `english(us)`; `spanish` is ambiguous). Prefer the short form: if `python` is a batch-file launcher (for example a pyenv-win shim), `cmd` breaks arguments that contain parentheses.
@@ -97,12 +118,16 @@ python -m tool lang $exec --keep english --keep japanese --backup <BackupDir>\la
 
 The files pass verification, but the change has not been tested in game yet. Indirect lighting may look softer or shifted, so check several areas.
 
-```powershell
-# Show what would change (does not touch any file)
-python -m tool shvol $wad --dry-run
+Show what would change (does not touch any file):
 
-# Apply, keeping the originals so the change can be undone
-python -m tool shvol $wad --backup <BackupDir>\shvol
+```bat
+python -m tool shvol "<GameDir>\exec\wad\pc_le" --dry-run
+```
+
+Apply, keeping the originals so the change can be undone:
+
+```bat
+python -m tool shvol "<GameDir>\exec\wad\pc_le" --backup "<BackupDir>\shvol"
 ```
 
 - A resized volume shifts every later entry in the wad. The tool rewrites the whole wad, updates the entry sizes, the GNF header (width, height, depth, pitch, data size) and the descriptor size field, and recomputes every `autopad` entry so the next entry still starts on a 64 KiB boundary.
@@ -112,11 +137,22 @@ python -m tool shvol $wad --backup <BackupDir>\shvol
 
 `shrink --in-place`, `shvol` and `lang` all accept `--backup <BackupDir>`. The originals are moved there and recorded in `manifest.json`, and `restore` puts them back.
 
-```powershell
-python -m tool shrink $wad --drop 2 --in-place --backup <BackupDir>\texpack
+Apply with a backup:
 
-python -m tool restore --backup <BackupDir>\texpack                           # everything
-python -m tool restore --backup <BackupDir>\texpack 090_caldera_010.texpack   # one file
+```bat
+python -m tool shrink "<GameDir>\exec\wad\pc_le" --drop 2 --in-place --backup "<BackupDir>\texpack"
+```
+
+Restore everything:
+
+```bat
+python -m tool restore --backup "<BackupDir>\texpack"
+```
+
+Restore one file:
+
+```bat
+python -m tool restore --backup "<BackupDir>\texpack" 090_caldera_010.texpack
 ```
 
 - Use a separate backup folder for each command, so each change can be restored on its own.
@@ -126,12 +162,12 @@ python -m tool restore --backup <BackupDir>\texpack 090_caldera_010.texpack   # 
 
 ## Tests
 
-```powershell
-$env:GOW_TEXPACK = '<GameDir>\exec\wad\pc_le\090_caldera_010.texpack'
+```bat
+set "GOW_TEXPACK=<GameDir>\exec\wad\pc_le\090_caldera_010.texpack"
 python -m unittest tests.test_texpack -v
 ```
 
-The tests read the given game file and write their results to a temporary folder.
+The tests read the game file named by `GOW_TEXPACK` and write their results to a temporary folder.
 
 ## Format notes
 
