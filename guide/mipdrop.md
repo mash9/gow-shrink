@@ -1,6 +1,6 @@
 # mipdrop: remove top texture mip levels
 
-`mipdrop` removes the top mip levels of every streamed texture and rewrites the `.texpack` files together with their `.toc`. It was called `shrink` before, and `shrink` still works as an alias.
+`mipdrop` removes the top mip levels of every streamed texture and rewrites the `.texpack` files together with their `.toc` (God of War games) or the `.utoc`/`.ucas` container (SILENT HILL f). It was called `shrink` before, and `shrink` still works as an alias.
 
 Back to the [README](../README.md).
 
@@ -38,7 +38,7 @@ python -m tool verify "<GameDir>"
 | `--in-place` | Replace the files in the game folder |
 | `--out DIR` | Write the results to another folder instead (originals untouched) |
 | `--backup DIR` | With `--in-place`, move the originals here so `restore` can put them back |
-| `--game gow` / `--game gowr` | Refuse files that belong to the other game (default: detect from the files) |
+| `--game gow` / `--game gowr` / `--game shf` | Refuse files that belong to another game (default: detect from the files) |
 | `--dry-run` | Print the plan without writing anything |
 
 ## God of War (2018)
@@ -92,6 +92,32 @@ To check or repair the wads by hand (for example after restoring files yourself)
 python -m tool wadsync "<GameDir>" --dry-run
 python -m tool wadsync "<GameDir>" --backup "<BackupDir>"
 ```
+
+## SILENT HILL f
+
+The textures are in `SHf\Content\Paks\SHf-Windows.ucas` (31.41 GiB), an Unreal Engine 5 IoStore container indexed by `SHf-Windows.utoc`. Given the game folder, the commands work on `SHf\Content\Paks` only; the Bonus Content app is not touched. Install the two extra packages first:
+
+```bat
+python -m pip install pyooz numpy
+python -m tool scan "<GameDir>" --drop 2 --game shf
+python -m tool mipdrop "<GameDir>" --drop 2 --in-place --backup "<BackupDir>" --game shf
+```
+
+| Setting | `.ucas` after | Saved |
+|---|---|---|
+| `--drop 1` | 13.23 GiB | 18.18 GiB |
+| **`--drop 2`** | **9.52 GiB** | **21.89 GiB** |
+
+`--drop 2` has been verified in game (the game starts and runs). It takes about 1.5 minutes on a 16-core PC.
+
+How it works:
+
+- 8,212 of the 8,829 streamed textures are shrunk. The top mips are cut from each texture's `.ubulk` chunk in whole 256 KiB compression blocks, so the remaining texture data is copied without recompression. Textures whose cut would not end on a block boundary keep more levels, and at least one streamed mip always remains. 96 textures with an unusual layout are left as they are.
+- Each shrunk texture's package (`.uasset`) gets its mip list, size and bulk data map updated. These packages are stored uncompressed (about 10 MB more), because `pyooz` can only decompress Oodle.
+- The original `.ucas` pads chunks so they do not cross 1 MiB boundaries (4.49 GiB of padding, used for patching). The new container is written without this padding, which is part of the savings above.
+- The `.utoc` keeps a BLAKE3 hash of every chunk; the tool recomputes it for every changed chunk. If the `blake3` package is installed it is used, otherwise a NumPy implementation is used.
+- With `--backup`, `SHf-Windows.utoc` and `SHf-Windows.ucas` are moved to the backup folder and `restore` puts both back. Keep `<BackupDir>` on the same drive as the game so the 31 GiB `.ucas` is moved instead of copied; the new files need about 10 GiB of free space.
+- `verify "<GameDir>" --game shf` decompresses every chunk and checks its hash (about 4.5 minutes); `--quick` checks only the layout.
 
 ## Notes
 

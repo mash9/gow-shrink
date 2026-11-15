@@ -141,5 +141,36 @@
         }
       ]
     }
+  },
+  "shf": {
+    "title": "SILENT HILL f",
+    "exe": "SHf.exe",
+    "dirs": {
+      "wad": "SHf/Content/Paks"
+    },
+    "app": {
+      "name": "SILENT HILL f",
+      "requires": [
+        "ooz=pyooz",
+        "numpy"
+      ],
+      "install_dirs": [],
+      "steps": [
+        {
+          "id": "mipdrop",
+          "title": "Textures",
+          "text": "Removes the top two mip levels of every streamed texture and repacks SHf-Windows.ucas without its patch padding.",
+          "saved": "21.9 GiB",
+          "args": [
+            "mipdrop",
+            "{game_dir}",
+            "--drop",
+            "2",
+            "--in-place"
+          ],
+          "repeat_warning": "Without a backup, running it again removes two more mip levels."
+        }
+      ]
+    }
   }
 }

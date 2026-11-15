@@ -55,7 +55,7 @@ def load_games(path: str = GAMES_FILE) -> dict[str, GameInfo]:
     return {g: GameInfo(v['title'], v['exe'], v.get('texpack_version'),
                         {role: tuple(rel.replace('\\', '/').split('/')) for role, rel in v.get('dirs', {}).items()},
                         lang_mod.LangConfig.from_json(v['lang']) if 'lang' in v else None)
-            for g, v in raw.items()}
+            for g, v in sorted(raw.items(), key=lambda kv: kv[1]['title'].casefold())}
 
 
 def games_with(attr: str) -> tuple[str, ...]:
@@ -104,6 +104,11 @@ def resolve_game(args) -> str:
         g = _game_of_dir(target) if target else None
         if g:
             detected[g].append(GAME_EXE[g])
+    if texture_cmd and not detected:
+        for p in args.paths:
+            g = _game_of_dir(p)
+            if g:
+                detected[g].append(GAME_EXE[g])
 
     if len(detected) > 1:
         raise SystemExit('files of several games were given: '
@@ -178,7 +183,168 @@ class Progress:
 
 
 
+def _shf_plans(args, policy, use_backup: bool = False):
+    from .mipdrop import iostore, shf
+    utocs = shf.find_utocs(args.paths)
+    if not utocs:
+        raise SystemExit('no .utoc/.ucas containers found in ' + ', '.join(args.paths))
+    for utoc in utocs:
+        name = os.path.basename(utoc)
+        src_toc, src_cas = utoc, shf.ucas_of(utoc)
+        if use_backup and args.backup:
+            btoc = os.path.join(args.backup, name)
+            bcas = shf.ucas_of(btoc)
+            if os.path.exists(btoc) and os.path.exists(bcas):
+                src_toc, src_cas = btoc, bcas
+        try:
+            plan = shf.make_plan(src_toc, policy, src_cas)
+        except (iostore.IoStoreError, OSError) as e:
+            print(f'{name}\n  [SKIP] {e}')
+            continue
+        yield utoc, plan
+
+
+def _shf_report(plan) -> tuple[int, int]:
+    before = plan.ucas_size()
+    after = before - plan.saved()
+    skipped = sum(plan.skipped.values())
+    print(f'  textures {len(plan.textures)}, shrunk {len(plan.changed)}, '
+          f'packages skipped {skipped}')
+    for reason, n in plan.skipped.most_common():
+        print(f'    {n:6}  {reason}')
+    print(f'  .ucas {fmt_size(before)} -> {fmt_size(after)} (saved {fmt_size(before - after)})')
+    return before, after
+
+
+def _shf_resolutions(plans) -> None:
+    res_before = collections.Counter()
+    res_after = collections.Counter()
+    for plan in plans:
+        for t in plan.textures:
+            res_before[t.tex.mips[0].max_dim] += 1
+            res_after[t.kept_top.max_dim] += 1
+    print()
+    print('textures by top resolution (max(width, height))')
+    for r in sorted(set(res_before) | set(res_after)):
+        print(f'  {r:5}: {res_before[r]:7} -> {res_after[r]:7}')
+
+
+def _scan_shf(args) -> int:
+    policy = policy_from(args)
+    plans = []
+    tot_before = tot_after = 0
+    for utoc, plan in _shf_plans(args, policy):
+        print(os.path.basename(utoc))
+        b, a = _shf_report(plan)
+        tot_before += b
+        tot_after += a
+        plans.append(plan)
+    print(f'total {fmt_size(tot_before)} -> {fmt_size(tot_after)} (saved {fmt_size(tot_before - tot_after)})')
+    _shf_resolutions(plans)
+    return 0
+
+
+def _verify_shf(args) -> int:
+    from .mipdrop import shf
+    bad = 0
+    for utoc in shf.find_utocs(args.paths):
+        name = os.path.basename(utoc)
+        errs = shf.verify(utoc, deep=not args.quick, progress=None if args.quick else Progress(f'hashing {name}'))
+        if errs:
+            bad += 1
+            print(f'[FAIL] {name}')
+            for e in errs[:20]:
+                print(f'    {e}')
+        else:
+            print(f'[OK]   {name}')
+    return 1 if bad else 0
+
+
+def _mipdrop_shf(args) -> int:
+    from .mipdrop import shf
+    policy = policy_from(args)
+    if bool(args.out) == bool(args.in_place):
+        raise SystemExit('specify exactly one of --out DIR or --in-place')
+    manifest = None
+    if args.in_place and args.backup:
+        os.makedirs(args.backup, exist_ok=True)
+        manifest = _load_manifest(args.backup)
+    elif args.in_place:
+        print('no --backup given: originals will be replaced without a backup')
+    else:
+        os.makedirs(args.out, exist_ok=True)
+
+    plans = []
+    for utoc, plan in _shf_plans(args, policy, use_backup=args.in_place):
+        name = os.path.basename(utoc)
+        cas_name = os.path.basename(shf.ucas_of(utoc))
+        game_dir = os.path.dirname(utoc)
+        print(name)
+        if plan.utoc != utoc:
+            print(f'  source: using backup ({plan.utoc})')
+        before, after = _shf_report(plan)
+        plans.append(plan)
+        if args.dry_run:
+            continue
+        if not plan.changed and plan.utoc == utoc:
+            print('  nothing to change')
+            continue
+
+        out_dir = args.out if args.out else game_dir
+        out_toc = os.path.join(out_dir, name)
+        out_cas = os.path.join(out_dir, cas_name)
+        if args.in_place:
+            out_toc += '.gowshrink.tmp'
+            out_cas += '.gowshrink.tmp'
+        elif os.path.abspath(out_toc) in (os.path.abspath(plan.utoc), os.path.abspath(utoc)):
+            raise SystemExit('--out points at the source folder; refusing to overwrite the original')
+        _check_free(out_dir, after)
+
+        try:
+            shf.write(plan, out_toc, out_cas, hash_progress=Progress('hashing'),
+                      write_progress=Progress('writing'))
+            errs = shf.verify(out_toc, out_cas, chunks=[t.package for t in plan.changed],
+                               progress=Progress('checking'))
+        except Exception as e:
+            errs = [f'{type(e).__name__}: {e}']
+        if errs:
+            print('  [FAIL] output failed verification; original left untouched:')
+            for e in errs[:10]:
+                print(f'    {e}')
+            if args.in_place:
+                for p in (out_toc, out_cas):
+                    if os.path.exists(p):
+                        os.remove(p)
+            return 1
+        print(f'  output verified ({fmt_size(os.path.getsize(out_cas))})')
+
+        if args.in_place and not args.backup:
+            os.replace(out_cas, shf.ucas_of(utoc))
+            os.replace(out_toc, utoc)
+            print('  replaced (no backup)')
+        elif args.in_place:
+            for n, path in ((name, utoc), (cas_name, shf.ucas_of(utoc))):
+                bpath = os.path.join(args.backup, n)
+                if not os.path.exists(bpath):
+                    size = os.path.getsize(path)
+                    _move(path, bpath)
+                    manifest['files'][n] = {'target_dir': game_dir, 'size': size}
+                    _save_manifest(args.backup, manifest)
+                    print(f'  original moved to backup: {bpath}')
+            os.replace(out_cas, shf.ucas_of(utoc))
+            os.replace(out_toc, utoc)
+            manifest['files'].setdefault(name, {'target_dir': game_dir,
+                                                'size': os.path.getsize(os.path.join(args.backup, name))}
+                                         )['policy'] = vars(policy)
+            _save_manifest(args.backup, manifest)
+            print('  replaced')
+    _shf_resolutions(plans)
+    return 0
+
+
 def cmd_scan(args) -> int:
+    if args.game == 'shf':
+        return _scan_shf(args)
     policy = policy_from(args)
     tot_before = tot_after = 0
     res_before = collections.Counter()
@@ -205,6 +371,8 @@ def cmd_scan(args) -> int:
 
 
 def cmd_verify(args) -> int:
+    if args.game == 'shf':
+        return _verify_shf(args)
     bad = 0
     for path in tx.iter_texpacks(args.paths):
         errs = tx.verify(path, deep=not args.quick)
@@ -273,6 +441,8 @@ def _check_free(directory: str, need: int) -> None:
 
 
 def cmd_mipdrop(args) -> int:
+    if args.game == 'shf':
+        return _mipdrop_shf(args)
     policy = policy_from(args)
     if bool(args.out) == bool(args.in_place):
         raise SystemExit('specify exactly one of --out DIR or --in-place')
@@ -651,18 +821,19 @@ def cmd_lang(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m tool", description='Install size reduction tool for God of War (2018) and God of War Ragnarok on PC')
+    ap = argparse.ArgumentParser(prog="python -m tool", description='Install size reduction tool for God of War (2018), God of War Ragnarok '
+                                             'and SILENT HILL f on PC')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     p = sub.add_parser('scan', help='report estimated sizes after removal')
-    p.add_argument('paths', nargs='+', help='game folder, .texpack files or folders')
+    p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc files or folders')
     add_policy_args(p)
     add_game_arg(p)
     p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser('mipdrop', aliases=['shrink'],
                        help='remove top mip levels of streamed textures and rewrite the texpacks')
-    p.add_argument('paths', nargs='+', help='game folder, .texpack files or folders')
+    p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc files or folders')
     add_policy_args(p)
     p.add_argument('--out', metavar='DIR', help='write results to this folder (originals untouched)')
     p.add_argument('--in-place', action='store_true',
@@ -674,7 +845,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_mipdrop)
 
     p = sub.add_parser('verify', help='check texpack/.toc integrity (and Ragnarok wad streaming info)')
-    p.add_argument('paths', nargs='+', help='game folder, .texpack files or folders')
+    p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc files or folders')
     p.add_argument('--quick', action='store_true', help='skip block header and wad checks')
     add_game_arg(p)
     p.set_defaults(func=cmd_verify)

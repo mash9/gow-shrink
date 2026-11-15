@@ -2,20 +2,22 @@
 
 A tool that reduces the install size of PC games by rewriting or removing their resource files. Each supported game gets its own set of steps, such as lowering texture resolution, shrinking lighting data and removing voice-over languages you do not use, and each step is tested in game before it is listed. The games and their steps are defined in `tool/games.json`, and more games will be added.
 
-Requires Python 3.11+. Some steps need extra packages (for example NumPy or `lz4`); they are listed with each game below, and the desktop app offers to install them.
+Requires Python 3.11+. Some steps need extra packages (for example NumPy, `lz4` or `pyooz`); they are listed with each game below, and the desktop app offers to install them.
 
 ## Supported games
 
-| Game | Executable | Install size (`exec\`) | After the quick start | Extra packages |
+| Game | Executable | Install size | After the quick start | Extra packages |
 |---|---|---|---|---|
 | God of War (2018) | `GoW.exe` | about 65 GB | about 25 GB | NumPy (`shvol` only) |
 | God of War Ragnarök | `GoWR.exe` | about 176 GB | about 70 GB | `lz4` |
+| SILENT HILL f | `SHf.exe` | about 50 GB | about 27 GB | `pyooz`, NumPy |
 
+- Install sizes are for `exec\` (God of War games) or the whole game folder (SILENT HILL f).
 - "After the quick start" is the install size minus the savings of every quick start step (see [Results](#results)).
 - Games that are not in this table are not supported yet. Each game needs its own analysis of its file formats.
-- The texture commands detect the game from the `.texpack` version, so the same commands work for both games.
+- The texture commands detect the game from the `.texpack` version, or from the executable in a parent folder when there are no `.texpack` files, so the same commands work for every game.
 - Other builds of the supported games may work if `verify` reports `[OK]` on the unmodified files. `mipdrop` skips any file whose structure fails verification.
-- Every command except `restore` accepts `--game gow` (God of War 2018) or `--game gowr` (Ragnarök). Without it, the game is detected from the `.texpack` version or from `GoW.exe` / `GoWR.exe` in a parent folder. With it, the command refuses files that belong to the other game. A command that the game does not support (for example `shvol` on Ragnarök) is refused either way.
+- Every command except `restore` accepts `--game gow` (God of War 2018), `--game gowr` (Ragnarök) or `--game shf` (SILENT HILL f). Without it, the game is detected from the `.texpack` version or from `GoW.exe` / `GoWR.exe` / `SHf.exe` in a parent folder. With it, the command refuses files that belong to the other game. A command that the game does not support (for example `shvol` on Ragnarök) is refused either way.
 
 ## Desktop app
 
@@ -25,7 +27,7 @@ Requires Python 3.11+. Some steps need extra packages (for example NumPy or `lz4
 
 ## Quick start
 
-Run the commands from the repository folder in Command Prompt. Replace `<GameDir>` with the folder that contains the game's `.exe`, and keep the quotes. Given the game folder, each command finds the subfolder it works on (`exec\wad\pc_le` or `exec`) by itself; you can still pass that subfolder, or single files, directly. The per-game executable names and subfolders are listed in `tool/games.json`. These commands replace game files directly, so run each one once and start the game after each step. To keep the originals so a step can be undone with `restore`, add `--backup "<BackupDir>"` (see each tool's section below).
+Run the commands from the repository folder in Command Prompt. Replace `<GameDir>` with the folder that contains the game's `.exe`, and keep the quotes. Given the game folder, each command finds the subfolder it works on (for example `exec\wad\pc_le`, `exec` or `SHf\Content\Paks`) by itself; you can still pass that subfolder, or single files, directly. The per-game executable names and subfolders are listed in `tool/games.json`. These commands replace game files directly, so run each one once and start the game after each step. To keep the originals so a step can be undone with `restore`, add `--backup "<BackupDir>"` (see each tool's section below).
 
 ### God of War (2018)
 
@@ -41,6 +43,13 @@ python -m tool lang "<GameDir>" --keep english --game gow
 python -m pip install lz4
 python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game gowr
 python -m tool lang "<GameDir>" --keep english --game gowr
+```
+
+### SILENT HILL f
+
+```bat
+python -m pip install pyooz numpy
+python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game shf
 ```
 
 ## Results
@@ -63,9 +72,17 @@ All three steps were applied to one install and the game was played through with
 | Lighting volumes (`.wad`) | `shvol` | - | Not supported |
 | Voice languages | `lang --keep english` | 16.7 GiB | Verified in game |
 
+### SILENT HILL f
+
+| Step | Command | Saved | Status |
+|---|---|---|---|
+| Textures (`.ucas`) | `mipdrop --drop 2` | 21.9 GiB | Verified in game (the game starts) |
+
+The voice-over is stored inside `SHf-Windows.pak` and is small (about 66 MB English, 90 MB Japanese), so there is no `lang` step for this game.
+
 ## Textures (`mipdrop`)
 
-`mipdrop` removes the top mip levels of every streamed texture in the `.texpack` files. Settings, savings per game, options and the Ragnarök specifics are in [guide/mipdrop.md](guide/mipdrop.md).
+`mipdrop` removes the top mip levels of every streamed texture in the `.texpack` files (God of War games) or the `.utoc`/`.ucas` container (SILENT HILL f). Settings, savings per game, options and the game specifics are in [guide/mipdrop.md](guide/mipdrop.md).
 
 ## Lighting volumes (`shvol`)
 

@@ -85,7 +85,7 @@ def load_games(path: str = GAMES_FILE) -> list[Game]:
                       for s in app.get('steps', ()))
         games.append(Game(key, app.get('name', g.get('title', key)), g['exe'], tuple(app.get('requires', ())),
                           tuple(os.path.normpath(d) for d in app.get('install_dirs', ())), steps))
-    return games
+    return sorted(games, key=lambda g: g.name.casefold())
 
 
 def load_settings() -> dict:
@@ -115,7 +115,12 @@ def python_exe() -> str:
 
 
 def missing_modules(names) -> list[str]:
-    return [n for n in dict.fromkeys(names) if importlib.util.find_spec(n) is None]
+    out = []
+    for spec in dict.fromkeys(names):
+        module, _, package = spec.partition('=')
+        if importlib.util.find_spec(module) is None:
+            out.append(package or module)
+    return out
 
 
 def find_game_root(path: str, exe: str) -> str | None:
@@ -510,7 +515,7 @@ class App:
         self._save()
 
     def _refresh_nav(self) -> None:
-        order = sorted(self.games.values(), key=lambda g: not self._ready(g))
+        order = sorted(self.games.values(), key=lambda g: g.name.casefold())
         for g in order:
             item = self.nav.get(g.key)
             if item is None:
