@@ -1,0 +1,64 @@
+{
+  "gow": {
+    "title": "God of War (2018)",
+    "exe": "GoW.exe",
+    "texpack_version": 5,
+    "dirs": {
+      "wad": "exec/wad/pc_le",
+      "exec": "exec"
+    },
+    "lang": {
+      "table": "languages/LANGS_*.txt",
+      "items": [
+        "sound/pc_le/{lang}",
+        "wad/pc_le/soundbanks/{lang}"
+      ],
+      "voices": {
+        "0": "japanese",
+        "1": "english(us)",
+        "2": "french(france)",
+        "3": "spanish(spain)",
+        "4": "german",
+        "5": "italian",
+        "7": "portuguese(portugal)",
+        "8": "russian",
+        "16": "polish",
+        "17": "portuguese(brazil)",
+        "20": "spanish(mexico)",
+        "25": "greek"
+      }
+    }
+  },
+  "gowr": {
+    "title": "God of War Ragnarok",
+    "exe": "GoWR.exe",
+    "texpack_version": 6,
+    "dirs": {
+      "wad": "exec/wad/pc_le",
+      "exec": "exec"
+    },
+    "lang": {
+      "table": "languages/LANGS_*.txt",
+      "items": [
+        "sound/pc_le/{lang}.0.audiopack",
+        "sound/pc_le/{lang}.audiopack.toc",
+        "wad/pc_le/soundbanks/{lang}"
+      ],
+      "voices": {
+        "0": "japanese",
+        "1": "english(us)",
+        "2": "french(france)",
+        "3": "spanish(spain)",
+        "4": "german",
+        "5": "italian",
+        "7": "portuguese(portugal)",
+        "8": "russian",
+        "16": "polish",
+        "17": "portuguese(brazil)",
+        "20": "spanish(mexico)",
+        "21": "arabic",
+        "25": "greek"
+      }
+    }
+  }
+}

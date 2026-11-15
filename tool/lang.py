@@ -1,31 +1,25 @@
-"""Remove the voice-over languages you do not use.
-
-Per-language audio lives in exactly two places under `exec`:
-  * `sound\\pc_le\\<language>\\`            (.wem files, 0.22-0.29 GiB each)
-  * `wad\\pc_le\\soundbanks\\<language>\\`   (.sbp files, about 0.045 GiB each)
-
-`exec\\languages\\LANGS_*.txt` maps each text language to the voice language it uses
-(`<id> <code> <NAME> <voice id>`); e.g. Korean text uses the English voice.
-"""
-
 from __future__ import annotations
 
 import glob
 import os
-from dataclasses import dataclass
-
-LANG_DIRS = (os.path.join('sound', 'pc_le'), os.path.join('wad', 'pc_le', 'soundbanks'))
-
-# voice folder names used by the game, keyed by language code
-CODE_TO_FOLDER = {
-    'en': 'english(us)', 'fr': 'french(france)', 'es': 'spanish(spain)', 'de': 'german',
-    'it': 'italian', 'pt': 'portuguese(portugal)', 'ru': 'russian', 'pl': 'polish',
-    'pt-BR': 'portuguese(brazil)', 'es-LA': 'spanish(mexico)', 'el': 'greek', 'ja': 'japanese',
-}
+import shutil
+from dataclasses import dataclass, field
 
 
 class LangError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class LangConfig:
+    table: str
+    items: tuple[str, ...]
+    voices: dict[int, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_json(cls, raw: dict) -> 'LangConfig':
+        return cls(raw['table'], tuple(raw['items']),
+                   {int(k): v for k, v in raw.get('voices', {}).items()})
 
 
 @dataclass
@@ -36,8 +30,12 @@ class TextLanguage:
     voice_id: int
 
 
-def read_language_table(exec_dir: str) -> list[TextLanguage]:
-    files = glob.glob(os.path.join(exec_dir, 'languages', 'LANGS_*.txt'))
+def _native(rel: str) -> str:
+    return os.path.join(*rel.replace('\\', '/').split('/'))
+
+
+def read_language_table(exec_dir: str, cfg: LangConfig) -> list[TextLanguage]:
+    files = sorted(glob.glob(os.path.join(exec_dir, _native(cfg.table))))
     if not files:
         return []
     out = []
@@ -49,19 +47,20 @@ def read_language_table(exec_dir: str) -> list[TextLanguage]:
     return out
 
 
-def voice_folder_for(table: list[TextLanguage], code: str) -> str:
-    """Voice folder used by text language `code` (e.g. 'ko' -> 'english(us)')."""
+def voice_folder_for(table: list[TextLanguage], code: str, cfg: LangConfig) -> str:
     by_code = {t.code.lower(): t for t in table}
     t = by_code.get(code.lower())
     if t is None:
         raise LangError(f'unknown language code {code!r}; known: {", ".join(sorted(by_code))}')
-    voice = next((v for v in table if v.id == t.voice_id), None)
-    if voice is None or voice.code not in CODE_TO_FOLDER:
-        raise LangError(f'no voice folder known for {code!r}')
-    return CODE_TO_FOLDER[voice.code]
+    name = cfg.voices.get(t.voice_id)
+    if name is None:
+        raise LangError(f'no voice language known for {code!r} (voice id {t.voice_id})')
+    return name
 
 
-def dir_size(path: str) -> int:
+def path_size(path: str) -> int:
+    if os.path.isfile(path):
+        return os.path.getsize(path)
     total = 0
     for root, _, files in os.walk(path):
         for name in files:
@@ -69,15 +68,18 @@ def dir_size(path: str) -> int:
     return total
 
 
-def installed_languages(exec_dir: str) -> dict[str, list[tuple[str, int]]]:
-    """Language folder name -> [(absolute path, size)] across both language locations."""
+def installed_languages(exec_dir: str, cfg: LangConfig) -> dict[str, list[tuple[str, int]]]:
     out: dict[str, list[tuple[str, int]]] = {}
-    for rel in LANG_DIRS:
-        base = os.path.join(exec_dir, rel)
-        if not os.path.isdir(base):
-            continue
-        for name in sorted(os.listdir(base)):
-            path = os.path.join(base, name)
-            if os.path.isdir(path):
-                out.setdefault(name, []).append((path, dir_size(path)))
+    for name in sorted(set(cfg.voices.values())):
+        for item in cfg.items:
+            path = os.path.join(exec_dir, _native(item.replace('{lang}', name)))
+            if os.path.exists(path):
+                out.setdefault(name, []).append((path, path_size(path)))
     return out
+
+
+def remove_path(path: str) -> None:
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    else:
+        os.remove(path)

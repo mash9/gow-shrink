@@ -1,14 +1,11 @@
-"""Parse, verify and rewrite `.texpack` / `.texpack.toc`, removing top mip levels.
-
-The format follows section 3 of docs/formats.md. All integers are little-endian.
-"""
-
 from __future__ import annotations
 
 import os
 import struct
 from dataclasses import dataclass, field
 from typing import BinaryIO, Callable, Iterable
+
+from . import lz4frame as lz4
 
 HEADER_OFF = 0x20
 TEXTURE_TABLE_OFF = 0x38
@@ -19,9 +16,14 @@ PLAIN_HDR_SIZE = 0x20
 GNF_HDR_SIZE = 0x124
 GNF_CHUNK_OFF = 0x10
 GNF_CHUNK_SIZE = 0x100
-SUB_SIZE = 0x14  # {u32 3, u32 0, u16 top+1, u16 count, u32 size, u32 2}
+SUB_SIZE = 0x14
 KIND_PLAIN = 3
 KIND_GNF = 5
+
+VERSION_GOW = 5
+VERSION_GOWR = 6
+GNF_VERSION = {VERSION_GOW: 2, VERSION_GOWR: 4}
+GNF_STREAM_PAD = {2: 0x100, 4: 0x1000}
 
 COPY_CHUNK = 8 << 20
 
@@ -44,9 +46,24 @@ def pow2_ceil(n: int) -> int:
     return 1 << (n - 1).bit_length() if n > 1 else 1
 
 
+def read_toc(toc_path: str) -> tuple[bytes, bool]:
+    with open(toc_path, 'rb') as f:
+        raw = f.read()
+    if lz4.is_frame(raw):
+        try:
+            return lz4.decompress(raw), True
+        except lz4.LZ4Error as e:
+            raise FormatError(f'{toc_path}: {e}') from None
+    return raw, False
+
+
+def encode_toc(toc: bytes, compressed: bool) -> bytes:
+    return lz4.compress(toc) if compressed else toc
+
+
 @dataclass
 class Record:
-    table_off: int      # absolute position in the record table (source file)
+    table_off: int
     offset16: int
     payload_size: int
     stored_size: int
@@ -75,8 +92,8 @@ class Record:
 @dataclass
 class Texture:
     hash: bytes
-    first: int                      # table_off of the first record
-    chain: list[Record] = field(default_factory=list)  # low resolution -> high resolution
+    first: int
+    chain: list[Record] = field(default_factory=list)
 
 
 @dataclass
@@ -90,7 +107,7 @@ class Texpack:
     version: int
     unk34: int
     textures: list[Texture]
-    records: list[Record]           # record table order
+    records: list[Record]
     toc: bytes
 
     @classmethod
@@ -146,17 +163,27 @@ class Texpack:
         return self.file_size - self.toc_size
 
 
-# --------------------------------------------------------------------------
-# Block header / GNF
 
 
 @dataclass
 class Gnf:
-    raw: bytearray      # 0x100-byte GNF chunk
+    raw: bytearray
+
+    @property
+    def version(self) -> int:
+        return self.raw[8]
+
+    @property
+    def agc(self) -> bool:
+        return self.version == 4
 
     @property
     def stream_size(self) -> int:
         return struct.unpack_from('<I', self.raw, 12)[0]
+
+    @property
+    def stream_pad(self) -> int:
+        return self.stream_size - self.data_size
 
     def dw(self, i: int) -> int:
         return struct.unpack_from('<I', self.raw, 16 + i * 4)[0]
@@ -166,6 +193,8 @@ class Gnf:
 
     @property
     def width(self) -> int:
+        if self.agc:
+            return (((self.dw(2) & 0xfff) << 2) | (self.dw(1) >> 30)) + 1
         return (self.dw(2) & 0x3fff) + 1
 
     @property
@@ -181,8 +210,12 @@ class Gnf:
         return (self.dw(3) >> 16) & 0xf
 
     @property
-    def pitch(self) -> int:
-        return ((self.dw(4) >> 13) & 0x3fff) + 1
+    def max_mip(self) -> int | None:
+        return (self.dw(5) >> 4) & 0xf if self.agc else None
+
+    @property
+    def pitch(self) -> int | None:
+        return None if self.agc else ((self.dw(4) >> 13) & 0x3fff) + 1
 
     @property
     def data_size(self) -> int:
@@ -191,14 +224,18 @@ class Gnf:
     def user_hash(self) -> bytes:
         return bytes(self.raw[0x38:0x40])
 
-    def resized(self, width: int, height: int, last_level: int, pitch: int,
-                total: int) -> 'Gnf':
+    def resized(self, width: int, height: int, last_level: int, total: int) -> 'Gnf':
         g = Gnf(bytearray(self.raw))
-        struct.pack_into('<I', g.raw, 12, total + GNF_CHUNK_SIZE)
-        dw2 = g.dw(2) & ~0x0fffffff
-        g.set_dw(2, dw2 | (width - 1) | ((height - 1) << 14))
+        struct.pack_into('<I', g.raw, 12, total + self.stream_pad)
+        if self.agc:
+            w = width - 1
+            g.set_dw(1, (g.dw(1) & 0x3fffffff) | ((w & 3) << 30))
+            g.set_dw(2, (g.dw(2) & ~0x0fffcfff) | (w >> 2) | ((height - 1) << 14))
+            g.set_dw(5, (g.dw(5) & ~0xf0) | (last_level << 4))
+        else:
+            g.set_dw(2, (g.dw(2) & ~0x0fffffff) | (width - 1) | ((height - 1) << 14))
+            g.set_dw(4, (g.dw(4) & ~(0x3fff << 13)) | ((pow2_ceil(width) - 1) << 13))
         g.set_dw(3, (g.dw(3) & ~(0xf << 16)) | (last_level << 16))
-        g.set_dw(4, (g.dw(4) & ~(0x3fff << 13)) | ((pitch - 1) << 13))
         g.set_dw(7, total)
         return g
 
@@ -210,7 +247,7 @@ class BlockHeader:
     stored_size: int
     kind: int
     gnf: Gnf | None
-    sub: tuple          # (3, 0, top+1, count, size, 2)
+    sub: tuple
 
     @classmethod
     def parse(cls, buf: bytes) -> 'BlockHeader':
@@ -234,12 +271,9 @@ def build_gnf_block_header(gnf: Gnf, sub: tuple, payload_size: int) -> bytes:
     return (_BLK.pack(1, GNF_HDR_SIZE, stored, KIND_GNF) + bytes(gnf.raw) + _SUB.pack(*sub))
 
 
-# --------------------------------------------------------------------------
-# Verification
 
 
 def verify(path: str, toc_path: str | None = None, deep: bool = True) -> list[str]:
-    """Return a list of problems. An empty list means the file is valid."""
     errors: list[str] = []
     try:
         tp = Texpack.open(path)
@@ -248,19 +282,24 @@ def verify(path: str, toc_path: str | None = None, deep: bool = True) -> list[st
 
     if toc_path is None:
         toc_path = path + '.toc'
+    if tp.version not in GNF_VERSION:
+        errors.append(f'version {tp.version} (expected {VERSION_GOW} or {VERSION_GOWR})')
     if os.path.exists(toc_path):
-        with open(toc_path, 'rb') as f:
-            if f.read() != tp.toc:
+        try:
+            toc, compressed = read_toc(toc_path)
+        except FormatError as e:
+            errors.append(str(e))
+        else:
+            if toc != tp.toc:
                 errors.append(f'{toc_path}: does not match the head of the pack')
+            if compressed != (tp.version == VERSION_GOWR):
+                errors.append(f'{toc_path}: LZ4 compression {"present" if compressed else "absent"}'
+                              f' for pack version {tp.version}')
     else:
         errors.append(f'{toc_path}: file not found')
-
-    if tp.version != 5:
-        errors.append(f'version {tp.version} (expected 5)')
     if tp.toc_size != align16(tp.record_table_off + tp.record_count * RECORD_SIZE):
         errors.append('toc_size differs from the 16-aligned end of the record table')
 
-    # Data blocks must run contiguously from toc_size to the end of the file
     pos = tp.toc_size
     for r in sorted(tp.records, key=lambda r: r.offset16):
         if r.data_off != pos:
@@ -283,9 +322,9 @@ def verify(path: str, toc_path: str | None = None, deep: bool = True) -> list[st
                     p = t.chain[k - 1]
                     if r.top_mip != p.top_mip + 1 or r.bottom_mip != r.top_mip:
                         errors.append(f'{where}: mip levels are not contiguous')
-                    if r.width != p.width * 2 and p.width != 1:
+                    if p.width != max(1, r.width // 2) and p.width != 1:
                         errors.append(f'{where}: width does not double')
-                    if r.height != p.height * 2 and p.height != 1:
+                    if p.height != max(1, r.height // 2) and p.height != 1:
                         errors.append(f'{where}: height does not double')
                 try:
                     bh = read_block_header(f, r)
@@ -306,14 +345,20 @@ def verify(path: str, toc_path: str | None = None, deep: bool = True) -> list[st
                     g = bh.gnf
                     if bh.kind != KIND_GNF:
                         errors.append(f'{where}: GNF block kind {bh.kind}')
+                    if g.version != GNF_VERSION.get(tp.version):
+                        errors.append(f'{where}: GNF version {g.version} in pack version '
+                                      f'{tp.version}')
                     if (g.width, g.height) != (r.width, r.height):
                         errors.append(f'{where}: GNF resolution {g.width}x{g.height} != '
                                       f'{r.width}x{r.height}')
                     if g.base_level != 0 or g.last_level != r.top_mip:
                         errors.append(f'{where}: GNF mip range {g.base_level}..{g.last_level}')
-                    if g.pitch != pow2_ceil(g.width):
+                    if g.agc and g.max_mip != r.top_mip:
+                        errors.append(f'{where}: GNF max_mip {g.max_mip} != {r.top_mip}')
+                    if not g.agc and g.pitch != pow2_ceil(g.width):
                         errors.append(f'{where}: GNF pitch {g.pitch}')
-                    if g.data_size != total or g.stream_size != total + GNF_CHUNK_SIZE:
+                    if (g.data_size != total
+                            or g.stream_pad != GNF_STREAM_PAD.get(g.version)):
                         errors.append(f'{where}: GNF size fields mismatch')
                     if g.user_hash() != t.hash[8:]:
                         errors.append(f'{where}: USER hash mismatch')
@@ -325,20 +370,10 @@ def verify(path: str, toc_path: str | None = None, deep: bool = True) -> list[st
     return errors
 
 
-# --------------------------------------------------------------------------
-# Removal plan
 
 
 @dataclass
 class DropPolicy:
-    """Decide how many top records to remove from each texture.
-
-    drop:     number of records to remove, starting from the top
-    max_res:  remove until max(width, height) is at most this value
-    min_res:  never let the remaining top resolution (max side) fall below this value
-    When drop and max_res are both given, whichever removes more wins.
-    At least one record always remains in each chain.
-    """
     drop: int = 0
     max_res: int | None = None
     min_res: int = 0
@@ -359,7 +394,7 @@ class DropPolicy:
 @dataclass
 class Plan:
     tp: Texpack
-    drops: list[int]                # records removed per texture
+    drops: list[int]
 
     @property
     def removed(self) -> list[Record]:
@@ -392,8 +427,6 @@ def make_plan(tp: Texpack, policy: DropPolicy) -> Plan:
     return Plan(tp, [policy.count(t.chain) for t in tp.textures])
 
 
-# --------------------------------------------------------------------------
-# Rewrite
 
 
 def _copy(src: BinaryIO, dst: BinaryIO, off: int, size: int) -> None:
@@ -409,10 +442,12 @@ def _copy(src: BinaryIO, dst: BinaryIO, off: int, size: int) -> None:
 def write(plan: Plan, out_pack: str, out_toc: str,
           progress: Callable[[int, int], None] | None = None) -> None:
     tp = plan.tp
+    if tp.version not in GNF_VERSION:
+        raise FormatError(f'{tp.path}: unsupported pack version {tp.version}')
+    compressed = tp.version == VERSION_GOWR
 
-    # Records to keep, new top records, and the old top records whose GNF moves
     removed = {r.table_off for r in plan.removed}
-    new_top: dict[int, tuple[Texture, Record]] = {}   # new top table_off -> (texture, old top)
+    new_top: dict[int, tuple[Texture, Record]] = {}
     for t, n in zip(tp.textures, plan.drops):
         if n:
             new_top[t.chain[-1 - n].table_off] = (t, t.chain[-1])
@@ -422,7 +457,6 @@ def write(plan: Plan, out_pack: str, out_toc: str,
     toc_size = plan.new_toc_size
 
     with open(tp.path, 'rb') as src:
-        # Build the new top block headers up front
         gnf_headers: dict[int, bytes] = {}
         for off, (t, old_top) in new_top.items():
             r = next(x for x in t.chain if x.table_off == off)
@@ -430,15 +464,16 @@ def write(plan: Plan, out_pack: str, out_toc: str,
             cur = read_block_header(src, r)
             if old.gnf is None or cur.gnf is not None:
                 raise FormatError(f'{tp.path}: GNF header not where expected ({off:#x})')
-            if old.gnf.pitch != pow2_ceil(old.gnf.width):
+            if not old.gnf.agc and old.gnf.pitch != pow2_ceil(old.gnf.width):
                 raise FormatError(f'{tp.path}: texture does not follow the pitch rule ({off:#x})')
+            if old.gnf.version != GNF_VERSION.get(tp.version):
+                raise FormatError(f'{tp.path}: unexpected GNF version {old.gnf.version} ({off:#x})')
             idx = t.chain.index(r)
             total = sum(x.payload_size for x in t.chain[:idx + 1])
-            gnf = old.gnf.resized(r.width, r.height, r.top_mip, pow2_ceil(r.width), total)
+            gnf = old.gnf.resized(r.width, r.height, r.top_mip, total)
             gnf_headers[off] = build_gnf_block_header(gnf, cur.sub, r.payload_size)
 
-        # Lay out data blocks (original order preserved)
-        layout = []      # (record, new_offset, new_stored)
+        layout = []
         pos = toc_size
         for r in sorted(kept, key=lambda r: r.offset16):
             stored = (align16(r.payload_size + GNF_HDR_SIZE) if r.table_off in gnf_headers
@@ -485,7 +520,15 @@ def write(plan: Plan, out_pack: str, out_toc: str,
                 raise FormatError('output size differs from the computed size')
 
     with open(out_toc, 'wb') as f:
-        f.write(toc)
+        f.write(encode_toc(toc, compressed))
+    copy_times(tp.path, out_pack)
+    if os.path.exists(tp.path + '.toc'):
+        copy_times(tp.path + '.toc', out_toc)
+
+
+def copy_times(src: str, dst: str) -> None:
+    st = os.stat(src)
+    os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
 
 
 def iter_texpacks(paths: Iterable[str]) -> list[str]:

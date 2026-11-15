@@ -1,15 +1,3 @@
-"""Halve the resolution of the SH lighting volume textures stored in `.wad` files.
-
-Each volume is a pair of wad entries with the same name `<8 hex>SH<n>`:
-  * tag 0x0001: descriptor; a GNF header sits in the body, preceded by a u32 that equals
-    the data entry size + 344
-  * tag 0x001d: data; a linear [depth][height][width] array of texels (RGBA8 UNORM or
-    RGBA16F), zero padded up to GNF dw7 = align8(w) * align8(h) * align4(d) * bpp,
-    followed by 12 bytes
-Changing a data entry size shifts every later entry, so the whole wad is rewritten and each
-`autopad` entry (tag 0x0019) is resized to keep the next entry on a 64 KiB boundary.
-"""
-
 from __future__ import annotations
 
 import re
@@ -26,7 +14,7 @@ TAG_AUTOPAD = 0x0019
 AUTOPAD_ALIGN = 0x10000
 DATA_TRAILER = 12
 DESC_SIZE_EXTRA = 344
-FORMATS = {10: (4, np.uint8), 12: (8, np.float16)}   # dfmt -> (bytes per texel, component type)
+FORMATS = {10: (4, np.uint8), 12: (8, np.float16)}
 
 
 class ShVolError(Exception):
@@ -38,7 +26,6 @@ def a16(n: int) -> int:
 
 
 def iter_wad_entries(buf):
-    """Yield (offset, tag, size, name) for each wad entry."""
     p, n = 0, len(buf)
     while p + HEADER <= n:
         tag, _, size = struct.unpack_from('<HHI', buf, p)
@@ -57,7 +44,7 @@ def a4(n: int) -> int:
 
 @dataclass
 class Gnf:
-    offset: int          # GNF chunk offset inside the descriptor body
+    offset: int
     dw: list[int]
 
     @property
@@ -113,7 +100,6 @@ def check_volume(desc_body: bytes, data_size: int) -> Gnf:
 
 
 def downsample(vol: np.ndarray) -> np.ndarray:
-    """2x2x2 box filter on a (d, h, w, c) array; odd sizes repeat the last cell."""
     d, h, w, c = vol.shape
     pad = ((0, d % 2), (0, h % 2), (0, w % 2), (0, 0))
     v = np.pad(vol.astype(np.float32), pad, mode='edge')
@@ -122,13 +108,11 @@ def downsample(vol: np.ndarray) -> np.ndarray:
 
 
 def shrink_volume(desc_body: bytes, data_body: bytes, factor: int) -> tuple[bytes, bytes]:
-    """Return (new descriptor body, new data body). factor 1 rebuilds the input unchanged."""
     g = check_volume(desc_body, len(data_body))
     bpp, ctype = FORMATS[g.dfmt]
     w, h, d = g.width, g.height, g.depth
     texels = np.frombuffer(data_body, dtype=ctype, count=w * h * d * 4).reshape(d, h, w, 4)
     if factor == 1:
-        # Keep the original padding and trailer bytes so a rebuild is byte-identical
         return desc_body, data_body
     if factor != 2:
         raise ShVolError('only factor 1 or 2 is supported')
@@ -192,7 +176,6 @@ def rewrite_wad(buf: bytes, factor: int = 2) -> Result:
     for i, (off, tag, size, name) in enumerate(entries):
         header = bytearray(buf[off:off + HEADER])
         if tag == TAG_AUTOPAD:
-            # the autopad body ends exactly on the next 64 KiB boundary
             body = bytes(-(len(out) + HEADER) % AUTOPAD_ALIGN)
         else:
             body = new_body.get(i, buf[off + HEADER:off + HEADER + size])
@@ -202,7 +185,7 @@ def rewrite_wad(buf: bytes, factor: int = 2) -> Result:
         end = off + HEADER + size
         pad = a16(len(out)) - len(out)
         if i not in new_body and tag != TAG_AUTOPAD and a16(end) - end == pad:
-            out += buf[end:end + pad]       # keep original padding bytes
+            out += buf[end:end + pad]
         else:
             out += bytes(pad)
     return Result(bytes(out), len(new_body) // 2, old_total, new_total)

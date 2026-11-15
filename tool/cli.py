@@ -1,13 +1,3 @@
-"""gow-shrink command-line tool.
-
-    python -m tool scan    <texpack|dir>... [--drop N] [--max-res R] [--min-res R]
-    python -m tool shrink  <texpack|dir>... (--out DIR | --in-place [--backup DIR]) [...]
-    python -m tool verify  <texpack|dir>...
-    python -m tool shvol   <wad dir> [--backup DIR] [--dry-run]
-    python -m tool lang    <exec dir> [--keep LANG]... [--keep-for CODE]... [--backup DIR] [--dry-run]
-    python -m tool restore --backup DIR [names...]
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -17,7 +7,10 @@ import os
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 
+from . import gowr_wad as gw
+from . import lang as lang_mod
 from . import texpack as tx
 
 GiB = 1 << 30
@@ -44,6 +37,126 @@ def add_policy_args(p: argparse.ArgumentParser) -> None:
                    help='never let the remaining top resolution fall below R')
 
 
+@dataclass(frozen=True)
+class GameInfo:
+    title: str
+    exe: str
+    texpack_version: int | None
+    dirs: dict[str, tuple[str, ...]]
+    lang: lang_mod.LangConfig | None = None
+
+
+GAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'games.json')
+
+
+def load_games(path: str = GAMES_FILE) -> dict[str, GameInfo]:
+    with open(path, encoding='utf-8') as f:
+        raw = json.load(f)
+    return {g: GameInfo(v['title'], v['exe'], v.get('texpack_version'),
+                        {role: tuple(rel.replace('\\', '/').split('/')) for role, rel in v.get('dirs', {}).items()},
+                        lang_mod.LangConfig.from_json(v['lang']) if 'lang' in v else None)
+            for g, v in raw.items()}
+
+
+def games_with(attr: str) -> tuple[str, ...]:
+    return tuple(g for g, i in GAME_INFO.items() if getattr(i, attr) is not None)
+
+
+GAME_INFO = load_games()
+GAMES = {g: i.title for g, i in GAME_INFO.items()}
+GAME_OF_VERSION = {i.texpack_version: g for g, i in GAME_INFO.items() if i.texpack_version is not None}
+GAME_EXE = {g: i.exe for g, i in GAME_INFO.items()}
+ARG_DIR_ROLES = (('paths', 'wad'), ('dir', 'wad'), ('exec_dir', 'exec'))
+
+
+def add_game_arg(p: argparse.ArgumentParser, games: tuple[str, ...] = tuple(GAME_INFO)) -> None:
+    names = ', '.join(f'{g} = {GAMES[g]}' for g in games)
+    p.add_argument('--game', choices=list(games), default=None,
+                   help=f'target game ({names}); default: detect from the files')
+    p.set_defaults(games=games)
+
+
+def _game_of_dir(path: str) -> str | None:
+    d = os.path.abspath(path)
+    if not os.path.isdir(d):
+        d = os.path.dirname(d)
+    for _ in range(5):
+        found = [g for g, exe in GAME_EXE.items() if os.path.isfile(os.path.join(d, exe))]
+        if len(found) == 1:
+            return found[0]
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return None
+
+
+def resolve_game(args) -> str:
+    texture_cmd = hasattr(args, 'paths')
+    detected: dict[str, list[str]] = collections.defaultdict(list)
+    if texture_cmd:
+        for path in tx.iter_texpacks(args.paths):
+            g = GAME_OF_VERSION.get(_pack_version(path))
+            if g:
+                detected[g].append(os.path.basename(path))
+    else:
+        target = getattr(args, 'dir', None) or getattr(args, 'exec_dir', None)
+        g = _game_of_dir(target) if target else None
+        if g:
+            detected[g].append(GAME_EXE[g])
+
+    if len(detected) > 1:
+        raise SystemExit('files of several games were given: '
+                         + '; '.join(f'{g}: {", ".join(v[:3])}' for g, v in detected.items())
+                         + '. Run each game separately.')
+    found = next(iter(detected), None)
+    if args.game and found and found != args.game:
+        raise SystemExit(f'--game {args.game} ({GAMES[args.game]}) was given, but the files belong to '
+                         f'{found} ({GAMES[found]}): {", ".join(detected[found][:3])}')
+    game = args.game or found
+    if game is None:
+        if len(args.games) == 1:
+            game = args.games[0]
+        else:
+            raise SystemExit('could not tell which game the files belong to; pass '
+                             + ' or '.join(f'--game {g}' for g in args.games))
+    if game not in args.games:
+        raise SystemExit(f'{args.cmd} is not supported for {GAMES[game]}')
+    return game
+
+
+def game_of_root(path: str) -> str | None:
+    if not os.path.isdir(path):
+        return None
+    found = [g for g, exe in GAME_EXE.items() if os.path.isfile(os.path.join(path, exe))]
+    return found[0] if len(found) == 1 else None
+
+
+def game_subdir(path: str, role: str) -> str:
+    game = game_of_root(path)
+    rel = GAME_INFO[game].dirs.get(role) if game else None
+    if rel is None:
+        return path
+    d = os.path.join(path, *rel)
+    if not os.path.isdir(d):
+        raise SystemExit(f'{path} looks like the {GAMES[game]} folder, but {os.path.join(*rel)} is missing')
+    return d
+
+
+def resolve_dirs(args) -> None:
+    changed = []
+    for attr, role in ARG_DIR_ROLES:
+        old = getattr(args, attr, None)
+        if not old:
+            continue
+        olds = old if isinstance(old, list) else [old]
+        news = [game_subdir(p, role) for p in olds]
+        changed += [n for o, n in zip(olds, news) if n != o]
+        setattr(args, attr, news if isinstance(old, list) else news[0])
+    for d in dict.fromkeys(changed):
+        print(f'using {d}')
+
+
 class Progress:
     def __init__(self, label: str):
         self.label = label
@@ -63,7 +176,6 @@ class Progress:
         sys.stderr.flush()
 
 
-# --------------------------------------------------------------------------
 
 
 def cmd_scan(args) -> int:
@@ -104,6 +216,28 @@ def cmd_verify(args) -> int:
                 print(f'    {e}')
         else:
             print(f'[OK]   {name}')
+
+    if not args.quick:
+        for d in sorted({os.path.abspath(p) for p in args.paths if os.path.isdir(p)}):
+            if not any(_pack_version(p) == tx.VERSION_GOWR for p in tx.iter_texpacks([d])):
+                continue
+            try:
+                results = gw.sync(d, dry_run=True, progress=Progress('checking wads'))
+            except (gw.WadError, tx.FormatError) as e:
+                print(f'[FAIL] wads: {e}')
+                bad += 1
+                continue
+            errors = [e for r in results for e in r.errors]
+            stale = [r for r in results if r.action == 'rewrite']
+            refs = sum(r.refs for r in results)
+            if errors or stale:
+                bad += 1
+                print(f'[FAIL] wads: {len(stale)} of {len(results)} do not match the texpacks '
+                      f'({sum(r.patched for r in stale)} texture refs); run wadsync')
+                for e in errors[:10]:
+                    print(f'    {e}')
+            else:
+                print(f'[OK]   wads: {len(results)} wads, {refs} texture refs match the texpacks')
     return 1 if bad else 0
 
 
@@ -126,7 +260,6 @@ def _move(src: str, dst: str) -> None:
     try:
         os.replace(src, dst)
     except OSError:
-        # Different drive: copy, then delete
         shutil.copy2(src, dst + '.tmp')
         os.replace(dst + '.tmp', dst)
         os.remove(src)
@@ -139,7 +272,7 @@ def _check_free(directory: str, need: int) -> None:
                          f'need {fmt_size(need)} + 1 GiB margin')
 
 
-def cmd_shrink(args) -> int:
+def cmd_mipdrop(args) -> int:
     policy = policy_from(args)
     if bool(args.out) == bool(args.in_place):
         raise SystemExit('specify exactly one of --out DIR or --in-place')
@@ -154,12 +287,28 @@ def cmd_shrink(args) -> int:
         os.makedirs(args.out, exist_ok=True)
 
     paths = tx.iter_texpacks(args.paths)
+
+    gowr_dirs: dict[str, dict] = {}
+    for path in paths:
+        if _pack_version(path) == tx.VERSION_GOWR:
+            d = os.path.dirname(os.path.abspath(path))
+            if d not in gowr_dirs:
+                run = {os.path.basename(p) for p in paths
+                       if os.path.dirname(os.path.abspath(p)) == d}
+                gowr_dirs[d] = gw.outside_chains(d, run)
+    if gowr_dirs and not args.in_place:
+        print('note: Ragnarok texpacks only work together with matching .wad files; '
+              '--out writes texpacks only. Use --in-place to update the wads as well.')
+    if gowr_dirs and args.in_place and not args.dry_run:
+        for d in gowr_dirs:
+            if not _wadsync(d, args.backup, manifest, dry_run=True, quiet=True):
+                return 1
+
     for path in paths:
         name = os.path.basename(path)
         game_dir = os.path.dirname(os.path.abspath(path))
         print(f'{name}')
 
-        # If a backup exists it holds the original; always rebuild from it on repeated runs
         src = path
         if args.in_place and args.backup:
             bpack = os.path.join(args.backup, name)
@@ -173,6 +322,14 @@ def cmd_shrink(args) -> int:
             continue
         tp = tx.Texpack.open(src)
         plan = tx.make_plan(tp, policy)
+        if game_dir in gowr_dirs:
+            try:
+                n = gw.align_drops(plan, gowr_dirs[game_dir])
+            except gw.WadError as e:
+                print(f'  [SKIP] {e}')
+                continue
+            if n:
+                print(f'  {n} textures shared with other texpacks follow their current chain')
         new_size = plan.new_file_size()
         print(f'  records {tp.record_count} -> {plan.new_record_count}, '
               f'{fmt_size(tp.file_size)} -> {fmt_size(new_size)}')
@@ -228,7 +385,86 @@ def cmd_shrink(args) -> int:
             })['policy'] = vars(policy)
             _save_manifest(args.backup, manifest)
             print('  replaced')
+
+    if args.in_place and not args.dry_run:
+        for d in gowr_dirs:
+            if not _wadsync(d, args.backup, manifest):
+                return 1
     return 0
+
+
+def _pack_version(path: str) -> int | None:
+    try:
+        return tx.Texpack.open(path).version
+    except (OSError, tx.FormatError):
+        return None
+
+
+def _wadsync(wad_dir: str, backup: str | None, manifest: dict | None,
+             dry_run: bool = False, quiet: bool = False) -> bool:
+    label = 'checking wads' if dry_run else 'updating wads'
+    if not quiet or not dry_run:
+        print(f'{label} in {wad_dir}')
+
+    def on_backup(name: str, target_dir: str, size: int) -> None:
+        manifest['files'][name] = {'target_dir': target_dir, 'size': size, 'kind': 'wad'}
+        _save_manifest(backup, manifest)
+
+    def on_restore(name: str) -> None:
+        manifest['files'].pop(name, None)
+        _save_manifest(backup, manifest)
+
+    if backup and manifest is None:
+        os.makedirs(backup, exist_ok=True)
+        manifest = _load_manifest(backup)
+    try:
+        results = gw.sync(wad_dir, backup=backup, dry_run=dry_run,
+                          on_backup=on_backup if backup else None,
+                          on_restore=on_restore if backup else None,
+                          progress=Progress(label), move=_move)
+    except (gw.WadError, tx.FormatError, OSError) as e:
+        print(f'  [FAIL] {e}')
+        return False
+    errors = [e for r in results for e in r.errors]
+    if errors:
+        print(f'  [FAIL] {len(errors)} streaming info blocks could not be matched; nothing written:')
+        for e in errors[:10]:
+            print(f'    {e}')
+        return False
+    acts = collections.Counter(r.action for r in results)
+    refs = sum(r.refs for r in results)
+    patched = sum(r.patched for r in results)
+    verb = 'would be' if dry_run else 'were'
+    print(f'  {len(results)} wads, {refs} texture refs: {acts["rewrite"]} wads {verb} rewritten '
+          f'({patched} refs differ from the original), {acts["restore"]} {verb} restored from backup')
+    return True
+
+
+def _restore_partners(backup: str, m: dict, names: list[str]) -> list[str]:
+    def hashes(name):
+        try:
+            tp = tx.Texpack.open(os.path.join(backup, name))
+        except (OSError, tx.FormatError):
+            return None
+        return {t.hash[8:] for t in tp.textures} if tp.version == tx.VERSION_GOWR else None
+
+    packs = [n for n in m['files'] if n.endswith('.texpack')]
+    chosen = {n: hashes(n) for n in packs if n in names}
+    chosen = {n: h for n, h in chosen.items() if h}
+    if not chosen:
+        return []
+    out = []
+    for n in packs:
+        if n in names:
+            continue
+        h = hashes(n)
+        if h and any(h & c for c in chosen.values()):
+            out.append(n)
+    return sorted(out)
+
+
+def cmd_wadsync(args) -> int:
+    return 0 if _wadsync(args.dir, args.backup, None, dry_run=args.dry_run) else 1
 
 
 def cmd_restore(args) -> int:
@@ -237,16 +473,24 @@ def cmd_restore(args) -> int:
         print('nothing to restore')
         return 0
     names = args.names or list(m['files'])
+    missing = _restore_partners(args.backup, m, names)
+    if missing:
+        print('[FAIL] these Ragnarok texpacks share textures with the ones being restored and are '
+              'still shrunk; restore them together (nothing was restored):')
+        for n in missing:
+            print(f'    {n}')
+        return 1
+    gowr_dirs: set[str] = set()
     for name in names:
         info = m['files'].get(name)
         if info is None:
             print(f'[SKIP] {name}: not in manifest')
             continue
         bpack = os.path.join(args.backup, name)
-        if info.get('kind') == 'dir':
+        if info.get('kind') in ('dir', 'path'):
             target = info['target']
-            if not os.path.isdir(bpack) or os.path.exists(target):
-                print(f'[FAIL] {name}: backup folder missing or target already exists')
+            if not os.path.exists(bpack) or os.path.exists(target):
+                print(f'[FAIL] {name}: backup missing or target already exists')
                 continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.move(bpack, target)
@@ -264,6 +508,13 @@ def cmd_restore(args) -> int:
         del m['files'][name]
         _save_manifest(args.backup, m)
         print(f'[RESTORED] {name} -> {target}')
+        if name.endswith('.texpack') and _pack_version(target) == tx.VERSION_GOWR:
+            gowr_dirs.add(info['target_dir'])
+
+    wads_left = any(v.get('kind') == 'wad' for v in m['files'].values())
+    for d in sorted(gowr_dirs):
+        if wads_left and not _wadsync(d, args.backup, m):
+            return 1
     return 0
 
 
@@ -321,18 +572,16 @@ def cmd_shvol(args) -> int:
 
 
 def cmd_lang(args) -> int:
-    from . import lang
-
+    lang = lang_mod
+    cfg = GAME_INFO[args.game].lang
     exec_dir = args.exec_dir
-    installed = lang.installed_languages(exec_dir)
+    installed = lang.installed_languages(exec_dir, cfg)
     if not installed:
-        raise SystemExit(f'no language folders under {exec_dir} (expected the game\'s exec folder)')
-    table = lang.read_language_table(exec_dir)
+        raise SystemExit(f'no voice language files under {exec_dir} (expected the game folder or its exec folder)')
+    table = lang.read_language_table(exec_dir, cfg)
 
     keep = set()
     for want in args.keep or []:
-        # accept the exact folder name or an unambiguous prefix ("english" -> "english(us)"),
-        # so callers can avoid parentheses that break batch-file launchers such as pyenv shims
         matches = [n for n in installed if n.lower() == want.lower()] or \
                   [n for n in installed if n.lower().startswith(want.lower())]
         if len(matches) == 1:
@@ -340,15 +589,15 @@ def cmd_lang(args) -> int:
         elif matches:
             raise SystemExit(f'{want!r} is ambiguous: {", ".join(matches)}')
         else:
-            keep.add(want)          # reported as "not installed" below
+            keep.add(want)
     for code in args.keep_for or []:
         try:
-            keep.add(lang.voice_folder_for(table, code))
+            keep.add(lang.voice_folder_for(table, code, cfg))
         except lang.LangError as e:
             raise SystemExit(str(e))
 
     if not keep:
-        print(f'{"voice language":24} {"size":>12}  folders')
+        print(f'{"voice language":24} {"size":>12}  items')
         for name, items in installed.items():
             print(f'{name:24} {fmt_size(sum(s for _, s in items))}  {len(items)}')
         if table:
@@ -356,7 +605,7 @@ def cmd_lang(args) -> int:
             print('text language -> voice language:')
             for t in table:
                 try:
-                    v = lang.voice_folder_for(table, t.code)
+                    v = lang.voice_folder_for(table, t.code, cfg)
                 except lang.LangError:
                     v = '?'
                 print(f'  {t.code:8} {t.name:14} -> {v}')
@@ -382,7 +631,7 @@ def cmd_lang(args) -> int:
         os.makedirs(args.backup, exist_ok=True)
         manifest = _load_manifest(args.backup)
     else:
-        print('no --backup given: language folders will be deleted')
+        print('no --backup given: language files and folders will be deleted')
     for name in remove:
         for path, size in installed[name]:
             rel = os.path.relpath(path, exec_dir)
@@ -390,27 +639,30 @@ def cmd_lang(args) -> int:
                 dst = os.path.join(args.backup, rel)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.move(path, dst)
-                manifest['files'][rel] = {'kind': 'dir', 'target': os.path.abspath(path), 'size': size}
+                manifest['files'][rel] = {'kind': 'dir' if os.path.isdir(dst) else 'path',
+                                          'target': os.path.abspath(path), 'size': size}
                 _save_manifest(args.backup, manifest)
                 print(f'  moved   {rel} ({fmt_size(size)})')
             else:
-                shutil.rmtree(path)
+                lang.remove_path(path)
                 print(f'  deleted {rel} ({fmt_size(size)})')
     print(f'freed {fmt_size(freed)}' + (' (after deleting the backup folder)' if args.backup else ''))
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m tool", description='God of War (PC) install size reduction tool')
+    ap = argparse.ArgumentParser(prog="python -m tool", description='Install size reduction tool for God of War (2018) and God of War Ragnarok on PC')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     p = sub.add_parser('scan', help='report estimated sizes after removal')
-    p.add_argument('paths', nargs='+', help='.texpack files or folders')
+    p.add_argument('paths', nargs='+', help='game folder, .texpack files or folders')
     add_policy_args(p)
+    add_game_arg(p)
     p.set_defaults(func=cmd_scan)
 
-    p = sub.add_parser('shrink', help='remove top mip levels and rewrite')
-    p.add_argument('paths', nargs='+', help='.texpack files or folders')
+    p = sub.add_parser('mipdrop', aliases=['shrink'],
+                       help='remove top mip levels of streamed textures and rewrite the texpacks')
+    p.add_argument('paths', nargs='+', help='game folder, .texpack files or folders')
     add_policy_args(p)
     p.add_argument('--out', metavar='DIR', help='write results to this folder (originals untouched)')
     p.add_argument('--in-place', action='store_true',
@@ -418,28 +670,40 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--backup', metavar='DIR',
                    help='backup folder for originals (for --in-place); without it originals are replaced')
     p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
-    p.set_defaults(func=cmd_shrink)
+    add_game_arg(p)
+    p.set_defaults(func=cmd_mipdrop)
 
-    p = sub.add_parser('verify', help='check texpack/.toc integrity')
-    p.add_argument('paths', nargs='+', help='.texpack files or folders')
-    p.add_argument('--quick', action='store_true', help='skip block header checks')
+    p = sub.add_parser('verify', help='check texpack/.toc integrity (and Ragnarok wad streaming info)')
+    p.add_argument('paths', nargs='+', help='game folder, .texpack files or folders')
+    p.add_argument('--quick', action='store_true', help='skip block header and wad checks')
+    add_game_arg(p)
     p.set_defaults(func=cmd_verify)
 
-    p = sub.add_parser('shvol', help='(experimental) halve the resolution of SH lighting volumes in .wad files')
-    p.add_argument('dir', help='folder with .wad files (exec\\wad\\pc_le)')
+    p = sub.add_parser('wadsync', help='(gowr) update .wad texture streaming info to match the texpacks')
+    p.add_argument('dir', help='game folder or the folder with .wad and .texpack files (exec\\wad\\pc_le)')
+    p.add_argument('--backup', metavar='DIR',
+                   help='backup folder: original wads are moved here and used as the source')
+    p.add_argument('--dry-run', action='store_true', help='report what would change without writing')
+    add_game_arg(p, ('gowr',))
+    p.set_defaults(func=cmd_wadsync)
+
+    p = sub.add_parser('shvol', help='(gow) halve the resolution of SH lighting volumes in .wad files')
+    p.add_argument('dir', help='game folder or the folder with .wad files (exec\\wad\\pc_le)')
     p.add_argument('--backup', metavar='DIR',
                    help='backup folder for original .wad files; without it originals are replaced')
     p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
+    add_game_arg(p, ('gow',))
     p.set_defaults(func=cmd_shvol)
 
     p = sub.add_parser('lang', help='list voice languages, or remove all but the ones you keep')
-    p.add_argument('exec_dir', help="the game's exec folder (<GameDir>\\exec)")
+    p.add_argument('exec_dir', help="game folder or its exec folder")
     p.add_argument('--keep', action='append', metavar='LANG',
-                   help='voice language folder to keep, e.g. "english(us)" (repeatable)')
+                   help='voice language to keep, e.g. "english(us)" (repeatable)')
     p.add_argument('--keep-for', action='append', metavar='CODE',
                    help='keep the voice used by this text language code, e.g. ko -> english(us) (repeatable)')
-    p.add_argument('--backup', metavar='DIR', help='move removed folders here instead of deleting them')
+    p.add_argument('--backup', metavar='DIR', help='move removed files and folders here instead of deleting them')
     p.add_argument('--dry-run', action='store_true', help='print the plan without changing anything')
+    add_game_arg(p, games_with('lang'))
     p.set_defaults(func=cmd_lang)
 
     p = sub.add_parser('restore', help='restore originals from the backup')
@@ -448,4 +712,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_restore)
 
     args = ap.parse_args(argv)
+    resolve_dirs(args)
+    if hasattr(args, 'games'):
+        args.game = resolve_game(args)
     return args.func(args)

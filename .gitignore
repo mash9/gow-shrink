@@ -9,6 +9,7 @@ venv/
 docs/
 tests/
 CLAUDE.md
+.mcp.json
 
 # Temporary files and outputs produced by the tool
 *.gowshrink.tmp
