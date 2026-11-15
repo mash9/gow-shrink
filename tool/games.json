@@ -27,6 +27,52 @@
         "20": "spanish(mexico)",
         "25": "greek"
       }
+    },
+    "app": {
+      "name": "God of War",
+      "requires": [],
+      "install_dirs": [],
+      "steps": [
+        {
+          "id": "mipdrop",
+          "title": "Textures",
+          "text": "Removes the top two mip levels of every streamed texture.",
+          "saved": "34.6 GiB",
+          "args": [
+            "mipdrop",
+            "{game_dir}",
+            "--drop",
+            "2",
+            "--in-place"
+          ],
+          "repeat_warning": "Running it again removes two more mip levels."
+        },
+        {
+          "id": "shvol",
+          "title": "Lighting volumes",
+          "text": "Halves the resolution of the SH lighting volumes in the .wad files.",
+          "saved": "2.1 GiB",
+          "args": [
+            "shvol",
+            "{game_dir}"
+          ],
+          "requires": [
+            "numpy"
+          ]
+        },
+        {
+          "id": "lang",
+          "title": "Voice languages",
+          "text": "Keeps the English voice-over and removes the other languages.",
+          "saved": "3.2 GiB",
+          "args": [
+            "lang",
+            "{game_dir}",
+            "--keep",
+            "english"
+          ]
+        }
+      ]
     }
   },
   "gowr": {
@@ -59,6 +105,41 @@
         "21": "arabic",
         "25": "greek"
       }
+    },
+    "app": {
+      "name": "God of War Ragnarök",
+      "requires": [
+        "lz4"
+      ],
+      "install_dirs": [],
+      "steps": [
+        {
+          "id": "mipdrop",
+          "title": "Textures",
+          "text": "Removes the top two mip levels of every streamed texture.",
+          "saved": "89.0 GiB",
+          "args": [
+            "mipdrop",
+            "{game_dir}",
+            "--drop",
+            "2",
+            "--in-place"
+          ],
+          "repeat_warning": "Running it again removes two more mip levels."
+        },
+        {
+          "id": "lang",
+          "title": "Voice languages",
+          "text": "Keeps the English voice-over and removes the other languages.",
+          "saved": "16.7 GiB",
+          "args": [
+            "lang",
+            "{game_dir}",
+            "--keep",
+            "english"
+          ]
+        }
+      ]
     }
   }
 }

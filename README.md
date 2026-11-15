@@ -1,26 +1,27 @@
 # gow-shrink
 
-A tool that reduces the install size of the God of War games on PC. It removes the top mip levels of streamed textures, halves the SH lighting volumes stored in `.wad` files, and deletes the voice-over languages you do not use.
+A tool that reduces the install size of PC games by rewriting or removing their resource files. Each supported game gets its own set of steps, such as lowering texture resolution, shrinking lighting data and removing voice-over languages you do not use, and each step is tested in game before it is listed. The games and their steps are defined in `tool/games.json`, and more games will be added.
 
-Requires Python 3.11+, NumPy (used by `shvol` only) and, for God of War Ragnarök, the `lz4` package (`python -m pip install lz4`).
+Requires Python 3.11+. Some steps need extra packages (for example NumPy or `lz4`); they are listed with each game below, and the desktop app offers to install them.
 
 ## Supported games
 
-| Game | Executable | `.texpack` version | Tested build | Install size (`exec\`) |
+| Game | Executable | Install size (`exec\`) | After the quick start | Extra packages |
 |---|---|---|---|---|
-| God of War (2018) | `GoW.exe` | 5 | PC release, files dated 2024-03-14 | about 65 GB |
-| God of War Ragnarök | `GoWR.exe` | 6 | PC release 01.01 (build 96749), files dated 2024-09-20 | about 176 GB |
+| God of War (2018) | `GoW.exe` | about 65 GB | about 25 GB | NumPy (`shvol` only) |
+| God of War Ragnarök | `GoWR.exe` | about 176 GB | about 70 GB | `lz4` |
 
-| Command | God of War (2018) | God of War Ragnarök |
-|---|---|---|
-| `mipdrop` / `verify` / `scan` (textures) | Supported, verified in game | Supported, verified in game |
-| `shvol` (lighting volumes) | Supported, verified in game | Not supported (`.wad` format differs) |
-| `lang` (voice languages) | Supported, verified in game | Supported, verified in game |
-
+- "After the quick start" is the install size minus the savings of every quick start step (see [Results](#results)).
+- Games that are not in this table are not supported yet. Each game needs its own analysis of its file formats.
 - The texture commands detect the game from the `.texpack` version, so the same commands work for both games.
-- Other God of War titles and other games are not supported. Their file formats differ.
 - Other builds of the supported games may work if `verify` reports `[OK]` on the unmodified files. `mipdrop` skips any file whose structure fails verification.
 - Every command except `restore` accepts `--game gow` (God of War 2018) or `--game gowr` (Ragnarök). Without it, the game is detected from the `.texpack` version or from `GoW.exe` / `GoWR.exe` in a parent folder. With it, the command refuses files that belong to the other game. A command that the game does not support (for example `shvol` on Ragnarök) is refused either way.
+
+## Desktop app
+
+![gow-shrink desktop app](images/app.png)
+
+`gow_shrink.pyw` in the repository folder runs the quick start steps below from a window. Double-click it, or run `python gow_shrink.pyw`. Pick the game in the list on the left, choose its folder, and press **Run** on each step. The games and their steps come from the `app` section of each game in `tool/games.json`. Turn on **Keep the original files** to move the originals to a backup folder (one subfolder per game and step, for example `<BackupDir>\gow-mipdrop`); undo a step with `python -m tool restore --backup "<BackupDir>\gow-mipdrop"`. Other commands and options are only available from the command line.
 
 ## Quick start
 
