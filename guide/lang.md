@@ -1,6 +1,6 @@
 # lang: remove unused voice languages
 
-`lang` lists the installed voice languages and removes all but the ones you keep. It works on both God of War (2018) and God of War Ragnarök.
+`lang` lists the installed voice languages and removes all but the ones you keep. It works on God of War (2018), God of War Ragnarök and Resident Evil Village.
 
 Back to the [README](../README.md).
 
@@ -12,6 +12,7 @@ Per-language audio lives in these places (relative to `exec\`):
 |---|---|---|---|
 | God of War (2018) | `sound\pc_le\<language>\`, `wad\pc_le\soundbanks\<language>\` | 12, 0.26-0.33 GiB each | about 3.2 GiB |
 | God of War Ragnarök | `sound\pc_le\<language>.0.audiopack` + `.audiopack.toc`, `wad\pc_le\soundbanks\<language>\` | 13 (adds `arabic`), 1.28-1.47 GiB each | about 16.7 GiB |
+| Resident Evil Village | Wwise packs and banks inside the `.pak` files (see below) | 9, 0.40-0.42 GiB each | about 3.3 GiB |
 
 The locations and the voice id -> language name mapping for each game are in `tool/games.json`. Other `.audiopack` files (`root`, `valhalla`, and the per-area ones such as `010_midgard1a`) are never touched.
 
@@ -44,6 +45,23 @@ Keep several and move the others to a backup folder:
 ```bat
 python -m tool lang "<GameDir>" --keep english --keep japanese --backup "<BackupDir>\lang"
 ```
+
+## Resident Evil Village
+
+Keeping only the English voice (`--keep english`) has been verified in game.
+
+The voice-over is stored inside the `.pak` files (`re_chunk_000.pak` and the DLC packs) as Wwise stream packs (`AKPK`, 120 per language) and sound banks (`BKHD`, 87 per language). There are no per-language folders, so `lang` rewrites the paks instead of moving files:
+
+```bat
+python -m tool lang "<GameDir>" --game re8
+python -m tool lang "<GameDir>" --keep english --backup "<BackupDir>\lang" --game re8
+```
+
+- The language of each pack comes from its language map and the language ids of its files, and the language of each bank from the language id in its header (the FNV-1 hash of the language name). Sound effects and music (`sfx`) are never touched, and banks with an unknown language id are left as they are.
+- Removed packs and banks are not deleted from the pak. Each is replaced by an empty one of a few dozen bytes (a pack with its language map and no files, a bank with only its header), so the game still finds a valid file if it looks for one.
+- `--keep-for` is not available, because the game has no text -> voice language table in its files.
+- Only the paks that contain voice data are rewritten, and the rest of each pak is copied byte for byte. With `--backup`, the original paks are moved to the backup folder and `restore` puts them back.
+- `mipdrop` and `lang` change the same paks. Use a separate backup folder for each step (for example `<BackupDir>\mipdrop` and `<BackupDir>\lang`), run `mipdrop` first, and restore in reverse order (`lang` first). Running `mipdrop` again with its backup rebuilds the paks from the originals and brings the voices back; run `lang` again afterwards.
 
 ## Notes
 

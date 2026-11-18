@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 
 from . import gowr_wad as gw
-from . import lang as lang_mod
+from .lang import gow as lang_mod
 from . import texpack as tx
 
 GiB = 1 << 30
@@ -67,6 +67,7 @@ GAMES = {g: i.title for g, i in GAME_INFO.items()}
 GAME_OF_VERSION = {i.texpack_version: g for g, i in GAME_INFO.items() if i.texpack_version is not None}
 GAME_EXE = {g: i.exe for g, i in GAME_INFO.items()}
 ARG_DIR_ROLES = (('paths', 'wad'), ('dir', 'wad'), ('exec_dir', 'exec'))
+LANG_MODULE_GAMES = ('re8',)
 
 
 def add_game_arg(p: argparse.ArgumentParser, games: tuple[str, ...] = tuple(GAME_INFO)) -> None:
@@ -163,8 +164,9 @@ def resolve_dirs(args) -> None:
 
 
 class Progress:
-    def __init__(self, label: str):
+    def __init__(self, label: str, rate: bool = True):
         self.label = label
+        self.rate = rate
         self.t0 = time.time()
         self.last = 0.0
 
@@ -175,7 +177,8 @@ class Progress:
         self.last = now
         pct = 100 * done / total if total else 100
         rate = done / max(now - self.t0, 1e-6) / (1 << 20)
-        sys.stderr.write(f'\r  {self.label}: {pct:5.1f}%  {rate:6.0f} MiB/s')
+        tail = f'  {rate:6.0f} MiB/s' if self.rate else ''
+        sys.stderr.write(f'\r  {self.label}: {pct:5.1f}%{tail}')
         if done >= total:
             sys.stderr.write('\n')
         sys.stderr.flush()
@@ -184,7 +187,8 @@ class Progress:
 
 
 def _shf_plans(args, policy, use_backup: bool = False):
-    from .mipdrop import iostore, shf
+    from .mipdrop import shf
+    from .package import iostore
     utocs = shf.find_utocs(args.paths)
     if not utocs:
         raise SystemExit('no .utoc/.ucas containers found in ' + ', '.join(args.paths))
@@ -342,7 +346,198 @@ def _mipdrop_shf(args) -> int:
     return 0
 
 
+def _re8_targets(paths: list[str]) -> tuple[list[str], list[str]]:
+    from .package import kpka
+    targets = kpka.find_paks(paths)
+    if not targets:
+        raise SystemExit('no .pak files found in ' + ', '.join(paths))
+    root = kpka.find_root(paths[0], GAME_EXE['re8'])
+    context = kpka.root_paks(root) if root else targets
+    return targets, context
+
+
+def _re8_sources(backup: str | None, paks: list[str]) -> dict[str, str]:
+    out = {}
+    if backup:
+        for p in paks:
+            b = os.path.join(backup, os.path.basename(p))
+            if os.path.exists(b):
+                out[p] = b
+    return out
+
+
+def _re8_rewrite(path: str, source: str, before: int, after: int, args, manifest: dict | None,
+                 write, verify, record: dict) -> bool:
+    name = os.path.basename(path)
+    game_dir = os.path.dirname(path)
+    out_dir = getattr(args, 'out', None)
+    in_place = not out_dir
+    out = os.path.join(out_dir or game_dir, name)
+    if in_place:
+        out += '.gowshrink.tmp'
+    elif os.path.abspath(out) in (os.path.abspath(source), os.path.abspath(path)):
+        raise SystemExit('--out points at the source folder; refusing to overwrite the original')
+    _check_free(out_dir or game_dir, after)
+    try:
+        crcs = write(out)
+        errs = verify(out, crcs)
+    except Exception as e:
+        errs = [f'{type(e).__name__}: {e}']
+    if errs:
+        print('  [FAIL] output failed verification; original left untouched:')
+        for e in errs[:10]:
+            print(f'    {e}')
+        if in_place and os.path.exists(out):
+            os.remove(out)
+        return False
+    print(f'  output verified ({fmt_size(os.path.getsize(out))})')
+    if not in_place:
+        return True
+    if not args.backup:
+        os.replace(out, path)
+        print('  replaced (no backup)')
+        return True
+    bpath = os.path.join(args.backup, name)
+    if not os.path.exists(bpath):
+        _move(path, bpath)
+        manifest['files'][name] = {'target_dir': game_dir, 'size': before}
+        _save_manifest(args.backup, manifest)
+        print(f'  original moved to backup: {bpath}')
+    os.replace(out, path)
+    manifest['files'].setdefault(name, {'target_dir': game_dir, 'size': before}).update(record)
+    _save_manifest(args.backup, manifest)
+    print('  replaced')
+    return True
+
+
+def _re8_plan(args, policy, use_backup: bool):
+    from .mipdrop import re8
+    from .package import kpka
+    targets, context = _re8_targets(args.paths)
+    sources = _re8_sources(args.backup, context) if use_backup else {}
+    try:
+        return re8.make_plan(targets, context, policy, sources, progress=Progress('reading materials', rate=False))
+    except (kpka.PakError, OSError) as e:
+        raise SystemExit(f'[FAIL] {e}')
+
+
+def _re8_report(pp) -> tuple[int, int]:
+    before = pp.pak.file_size
+    after = pp.estimate()
+    print(f'  streamed textures {len(pp.textures)}, shrunk {len(pp.drops)}, '
+          f'skipped {sum(pp.skipped.values())}')
+    for reason, n in pp.skipped.most_common():
+        print(f'    {n:6}  {reason}')
+    print(f'  {fmt_size(before)} -> about {fmt_size(after)} (saved about {fmt_size(before - after)})')
+    return before, after
+
+
+def _re8_resolutions(plan) -> None:
+    res_before = collections.Counter()
+    res_after = collections.Counter()
+    for pp in plan.paks:
+        for t in pp.textures:
+            res_before[t.tex.max_dim()] += 1
+            res_after[t.kept_dim if t.blob in pp.drops else t.tex.max_dim()] += 1
+    print()
+    print('streamed textures by top resolution (max(width, height))')
+    for r in sorted(set(res_before) | set(res_after)):
+        print(f'  {r:5}: {res_before[r]:7} -> {res_after[r]:7}')
+
+
+def _re8_header(plan) -> None:
+    print(f'texture paths found in materials: {plan.names}, streamed textures with a base copy: {plan.streams}')
+
+
+def _scan_re8(args) -> int:
+    plan = _re8_plan(args, policy_from(args), use_backup=False)
+    _re8_header(plan)
+    tot_before = tot_after = 0
+    for pp in plan.paks:
+        if not pp.textures:
+            continue
+        print(os.path.basename(pp.path))
+        b, a = _re8_report(pp)
+        tot_before += b
+        tot_after += a
+    print(f'total {fmt_size(tot_before)} -> about {fmt_size(tot_after)} '
+          f'(saved about {fmt_size(tot_before - tot_after)})')
+    _re8_resolutions(plan)
+    return 0
+
+
+def check_re8_resource(data: bytes) -> str | None:
+    from .lang import re8 as lang_re8
+    from .mipdrop import re8
+    return re8.check_tex(data) or lang_re8.check_sound(data)
+
+
+def _verify_re8(args) -> int:
+    from .package import kpka
+    targets, _ = _re8_targets(args.paths)
+    bad = 0
+    for path in targets:
+        name = os.path.basename(path)
+        errs = kpka.verify(path, deep=not args.quick, check=check_re8_resource,
+                           progress=None if args.quick else Progress(f'checking {name}', rate=False))
+        if errs:
+            bad += 1
+            print(f'[FAIL] {name}')
+            for e in errs[:20]:
+                print(f'    {e}')
+        else:
+            print(f'[OK]   {name}')
+    return 1 if bad else 0
+
+
+def _backup_manifest(args, in_place: bool = True) -> dict | None:
+    if in_place and args.backup:
+        os.makedirs(args.backup, exist_ok=True)
+        return _load_manifest(args.backup)
+    if in_place:
+        print('no --backup given: originals will be replaced without a backup')
+    return None
+
+
+def _mipdrop_re8(args) -> int:
+    from .mipdrop import re8
+    policy = policy_from(args)
+    if bool(args.out) == bool(args.in_place):
+        raise SystemExit('specify exactly one of --out DIR or --in-place')
+    manifest = _backup_manifest(args, args.in_place)
+    if args.out:
+        os.makedirs(args.out, exist_ok=True)
+
+    plan = _re8_plan(args, policy, use_backup=args.in_place)
+    _re8_header(plan)
+    for pp in plan.paks:
+        if not pp.textures and pp.source == pp.path:
+            continue
+        print(os.path.basename(pp.path))
+        if pp.source != pp.path:
+            print(f'  source: using backup ({pp.source})')
+        before, after = _re8_report(pp)
+        if args.dry_run:
+            continue
+        if not pp.drops and pp.source == pp.path:
+            print('  nothing to change')
+            continue
+        keys = {t.key for t in pp.changed}
+        ok = _re8_rewrite(
+            pp.path, pp.source, before, after, args, manifest,
+            write=lambda out, pp=pp: re8.write(pp, out, progress=Progress('writing')),
+            verify=lambda out, crcs, keys=keys: re8.verify(out, crcs, deep=False, deep_keys=keys,
+                                                           progress=Progress('checking', rate=False)),
+            record={'policy': vars(policy)})
+        if not ok:
+            return 1
+    _re8_resolutions(plan)
+    return 0
+
+
 def cmd_scan(args) -> int:
+    if args.game == 're8':
+        return _scan_re8(args)
     if args.game == 'shf':
         return _scan_shf(args)
     policy = policy_from(args)
@@ -371,6 +566,8 @@ def cmd_scan(args) -> int:
 
 
 def cmd_verify(args) -> int:
+    if args.game == 're8':
+        return _verify_re8(args)
     if args.game == 'shf':
         return _verify_shf(args)
     bad = 0
@@ -441,6 +638,8 @@ def _check_free(directory: str, need: int) -> None:
 
 
 def cmd_mipdrop(args) -> int:
+    if args.game == 're8':
+        return _mipdrop_re8(args)
     if args.game == 'shf':
         return _mipdrop_shf(args)
     policy = policy_from(args)
@@ -741,17 +940,9 @@ def cmd_shvol(args) -> int:
     return 0
 
 
-def cmd_lang(args) -> int:
-    lang = lang_mod
-    cfg = GAME_INFO[args.game].lang
-    exec_dir = args.exec_dir
-    installed = lang.installed_languages(exec_dir, cfg)
-    if not installed:
-        raise SystemExit(f'no voice language files under {exec_dir} (expected the game folder or its exec folder)')
-    table = lang.read_language_table(exec_dir, cfg)
-
+def _match_keep(wants: list[str], installed) -> set[str]:
     keep = set()
-    for want in args.keep or []:
+    for want in wants:
         matches = [n for n in installed if n.lower() == want.lower()] or \
                   [n for n in installed if n.lower().startswith(want.lower())]
         if len(matches) == 1:
@@ -760,6 +951,84 @@ def cmd_lang(args) -> int:
             raise SystemExit(f'{want!r} is ambiguous: {", ".join(matches)}')
         else:
             keep.add(want)
+    return keep
+
+
+def _lang_re8(args) -> int:
+    from .lang import re8 as lang_re8
+    from .package import kpka
+    if args.keep_for:
+        raise SystemExit('--keep-for is not supported for Resident Evil Village; use --keep <voice language>')
+    targets, _ = _re8_targets([args.exec_dir])
+    try:
+        scans = lang_re8.scan(targets, _re8_sources(args.backup, targets))
+    except (kpka.PakError, OSError) as e:
+        raise SystemExit(f'[FAIL] {e}')
+    installed = lang_re8.installed(scans)
+    if not installed:
+        raise SystemExit(f'no voice language data found in the .pak files under {args.exec_dir}')
+    keep = _match_keep(args.keep or [], installed)
+
+    if not keep:
+        print(f'{"voice language":24} {"size":>12}  {"packs":>6} {"banks":>6}')
+        for name, (packs, banks, size) in installed.items():
+            print(f'{name:24} {fmt_size(size)}  {packs:6} {banks:6}')
+        print()
+        print('choose what to keep with --keep <voice language>')
+        return 0
+
+    unknown = keep - set(installed)
+    if unknown:
+        raise SystemExit(f'not installed: {", ".join(sorted(unknown))}; installed: {", ".join(installed)}')
+    lang_re8.plan_removal(scans, keep)
+    remove = [n for n in installed if n not in keep]
+    freed = sum(ps.saved() for ps in scans)
+    print(f'keep: {", ".join(sorted(keep))}')
+    print(f'remove: {", ".join(remove) or "-"} (about {fmt_size(freed)})')
+    for ps in scans:
+        for reason, n in ps.skipped.most_common():
+            print(f'  {os.path.basename(ps.path)}: skipped {n} ({reason})')
+    if args.dry_run:
+        return 0
+    if not freed and all(ps.source == ps.path for ps in scans):
+        print('nothing to remove')
+        return 0
+
+    manifest = _backup_manifest(args)
+    for ps in scans:
+        if not ps.remove and ps.source == ps.path:
+            continue
+        print(os.path.basename(ps.path))
+        if ps.source != ps.path:
+            print(f'  source: using backup ({ps.source})')
+        before = ps.pak.file_size
+        after = before - ps.saved()
+        print(f'  {len(ps.remove)} voice packs and banks emptied, {fmt_size(before)} -> about {fmt_size(after)}')
+        keys = {k for s in ps.remove for k in s.keys}
+        ok = _re8_rewrite(
+            ps.path, ps.source, before, after, args, manifest,
+            write=lambda out, ps=ps: lang_re8.write(ps, out, progress=Progress('writing')),
+            verify=lambda out, crcs, keys=keys: lang_re8.verify(out, crcs, deep=False, deep_keys=keys,
+                                                                progress=Progress('checking', rate=False)),
+            record={'keep': sorted(keep)})
+        if not ok:
+            return 1
+    print(f'freed about {fmt_size(freed)}' + (' (after deleting the backup folder)' if args.backup else ''))
+    return 0
+
+
+def cmd_lang(args) -> int:
+    if args.game == 're8':
+        return _lang_re8(args)
+    lang = lang_mod
+    cfg = GAME_INFO[args.game].lang
+    exec_dir = args.exec_dir
+    installed = lang.installed_languages(exec_dir, cfg)
+    if not installed:
+        raise SystemExit(f'no voice language files under {exec_dir} (expected the game folder or its exec folder)')
+    table = lang.read_language_table(exec_dir, cfg)
+
+    keep = _match_keep(args.keep or [], installed)
     for code in args.keep_for or []:
         try:
             keep.add(lang.voice_folder_for(table, code, cfg))
@@ -821,19 +1090,19 @@ def cmd_lang(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m tool", description='Install size reduction tool for God of War (2018), God of War Ragnarok '
-                                             'and SILENT HILL f on PC')
+    ap = argparse.ArgumentParser(prog="python -m tool", description='Install size reduction tool for God of War (2018), God of War Ragnarok, '
+                                             'SILENT HILL f and Resident Evil Village on PC')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     p = sub.add_parser('scan', help='report estimated sizes after removal')
-    p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc files or folders')
+    p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc/.pak files or folders')
     add_policy_args(p)
     add_game_arg(p)
     p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser('mipdrop', aliases=['shrink'],
                        help='remove top mip levels of streamed textures and rewrite the texpacks')
-    p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc files or folders')
+    p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc/.pak files or folders')
     add_policy_args(p)
     p.add_argument('--out', metavar='DIR', help='write results to this folder (originals untouched)')
     p.add_argument('--in-place', action='store_true',
@@ -845,7 +1114,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_mipdrop)
 
     p = sub.add_parser('verify', help='check texpack/.toc integrity (and Ragnarok wad streaming info)')
-    p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc files or folders')
+    p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc/.pak files or folders')
     p.add_argument('--quick', action='store_true', help='skip block header and wad checks')
     add_game_arg(p)
     p.set_defaults(func=cmd_verify)
@@ -872,9 +1141,10 @@ def main(argv: list[str] | None = None) -> int:
                    help='voice language to keep, e.g. "english(us)" (repeatable)')
     p.add_argument('--keep-for', action='append', metavar='CODE',
                    help='keep the voice used by this text language code, e.g. ko -> english(us) (repeatable)')
-    p.add_argument('--backup', metavar='DIR', help='move removed files and folders here instead of deleting them')
+    p.add_argument('--backup', metavar='DIR',
+                   help='move removed files and folders (re8: the original .pak files) here instead of deleting them')
     p.add_argument('--dry-run', action='store_true', help='print the plan without changing anything')
-    add_game_arg(p, games_with('lang'))
+    add_game_arg(p, games_with('lang') + LANG_MODULE_GAMES)
     p.set_defaults(func=cmd_lang)
 
     p = sub.add_parser('restore', help='restore originals from the backup')

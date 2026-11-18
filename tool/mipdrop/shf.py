@@ -6,7 +6,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import iostore as io
+from ..package import iostore as io
 from . import zen
 from .b3hash import blake3_160
 

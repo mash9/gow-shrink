@@ -1,6 +1,6 @@
 # mipdrop: remove top texture mip levels
 
-`mipdrop` removes the top mip levels of every streamed texture and rewrites the `.texpack` files together with their `.toc` (God of War games) or the `.utoc`/`.ucas` container (SILENT HILL f). It was called `shrink` before, and `shrink` still works as an alias.
+`mipdrop` removes the top mip levels of every streamed texture and rewrites the `.texpack` files together with their `.toc` (God of War games), the `.utoc`/`.ucas` container (SILENT HILL f) or the `.pak` files (Resident Evil Village). It was called `shrink` before, and `shrink` still works as an alias.
 
 Back to the [README](../README.md).
 
@@ -38,7 +38,7 @@ python -m tool verify "<GameDir>"
 | `--in-place` | Replace the files in the game folder |
 | `--out DIR` | Write the results to another folder instead (originals untouched) |
 | `--backup DIR` | With `--in-place`, move the originals here so `restore` can put them back |
-| `--game gow` / `--game gowr` / `--game shf` | Refuse files that belong to another game (default: detect from the files) |
+| `--game gow` / `--game gowr` / `--game shf` / `--game re8` | Refuse files that belong to another game (default: detect from the files) |
 | `--dry-run` | Print the plan without writing anything |
 
 ## God of War (2018)
@@ -108,7 +108,7 @@ python -m tool mipdrop "<GameDir>" --drop 2 --in-place --backup "<BackupDir>" --
 | `--drop 1` | 13.23 GiB | 18.18 GiB |
 | **`--drop 2`** | **9.52 GiB** | **21.89 GiB** |
 
-`--drop 2` has been verified in game (the game starts and runs). It takes about 1.5 minutes on a 16-core PC.
+`--drop 2` has been verified in game. It takes about 1.5 minutes on a 16-core PC.
 
 How it works:
 
@@ -118,6 +118,30 @@ How it works:
 - The `.utoc` keeps a BLAKE3 hash of every chunk; the tool recomputes it for every changed chunk. If the `blake3` package is installed it is used, otherwise a NumPy implementation is used.
 - With `--backup`, `SHf-Windows.utoc` and `SHf-Windows.ucas` are moved to the backup folder and `restore` puts both back. Keep `<BackupDir>` on the same drive as the game so the 31 GiB `.ucas` is moved instead of copied; the new files need about 10 GiB of free space.
 - `verify "<GameDir>" --game shf` decompresses every chunk and checks its hash (about 4.5 minutes); `--quick` checks only the layout.
+
+## Resident Evil Village
+
+All resources are in RE Engine `.pak` files: `re_chunk_000.pak` (27.50 GiB), its `re_chunk_000.pak.patch_*.pak` updates and the DLC packs in `dlc\`. No extra packages are needed.
+
+```bat
+python -m tool scan "<GameDir>" --drop 2 --game re8
+python -m tool mipdrop "<GameDir>" --drop 2 --in-place --backup "<BackupDir>" --game re8
+```
+
+| Setting | Rewritten `.pak` files (35.35 GiB before) | Saved |
+|---|---|---|
+| **`--drop 2`** | **17.45 GiB** | **17.90 GiB** |
+
+`--drop 2` has been verified in game. It takes about 1 minute (plus about 5 seconds to read the materials) on a 16-core PC.
+
+How it works:
+
+- The game stores each streamed texture twice: a base copy at `natives/stm/<path>.tex.30`, usually a quarter of the full resolution, and the full-resolution copy at `natives/stm/streaming/<path>.tex.30`. The base copy holds the lower mips of the streaming copy byte for byte. Only the streaming copies are shrunk; base copies and textures without a streaming copy (such as the UI) are left as they are.
+- The pak index stores only a hash of each path, so the tool reads the texture paths from the material (`.mdf2`) files and hashes them to find the streaming copies (17,842 of 17,846 are shrunk).
+- A streaming copy never goes below the resolution of its base copy. With `--drop 2` most textures end up at their base resolution (1024-2048 becomes 256-512), and running `mipdrop` again changes nothing.
+- Each changed texture gets new width, height, mip count and mip offsets; the remaining mips are copied unchanged and recompressed with deflate. The rest of the pak is copied byte for byte in the original order. The entry checksums are kept: the game does not check them.
+- Only the paks that contain streaming textures are rewritten (`re_chunk_000.pak`, `patch_006` and four DLC packs). With `--backup`, the originals are moved to the backup folder and `restore` puts them back. Keep `<BackupDir>` on the same drive as the game so the 27.5 GiB `re_chunk_000.pak` is moved instead of copied; the new files need about 17 GiB of free space.
+- `verify "<GameDir>" --game re8` decompresses every entry and checks every texture layout; `--quick` checks only the pak layout.
 
 ## Notes
 

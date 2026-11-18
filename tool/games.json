@@ -172,5 +172,41 @@
         }
       ]
     }
+  },
+  "re8": {
+    "title": "Resident Evil Village",
+    "exe": "re8.exe",
+    "app": {
+      "name": "Resident Evil Village",
+      "requires": [],
+      "install_dirs": [],
+      "steps": [
+        {
+          "id": "mipdrop",
+          "title": "Textures",
+          "text": "Shrinks every streamed texture to the resolution of its base copy (two mip levels down) and rewrites the .pak files.",
+          "saved": "17.9 GiB",
+          "args": [
+            "mipdrop",
+            "{game_dir}",
+            "--drop",
+            "2",
+            "--in-place"
+          ]
+        },
+        {
+          "id": "lang",
+          "title": "Voice languages",
+          "text": "Keeps the English voice-over and empties the other languages' voice packs and banks inside the .pak files.",
+          "saved": "3.3 GiB",
+          "args": [
+            "lang",
+            "{game_dir}",
+            "--keep",
+            "english"
+          ]
+        }
+      ]
+    }
   }
 }
