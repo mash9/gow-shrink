@@ -205,6 +205,16 @@
             "--keep",
             "english"
           ]
+        },
+        {
+          "id": "prune",
+          "title": "Replaced patch data",
+          "text": "Removes the entries of re_chunk_000.pak and its patch paks that a later patch pak replaces.",
+          "saved": "1.6 GiB",
+          "args": [
+            "prune",
+            "{game_dir}"
+          ]
         }
       ]
     }

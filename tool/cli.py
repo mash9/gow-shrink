@@ -836,6 +836,54 @@ def cmd_wadsync(args) -> int:
     return 0 if _wadsync(args.dir, args.backup, None, dry_run=args.dry_run) else 1
 
 
+def cmd_prune(args) -> int:
+    from .package import kpka
+    from .prune import re8 as prune_re8
+    _, context = _re8_targets([args.dir])
+    chain = prune_re8.main_chain(context)
+    try:
+        plans = prune_re8.plan(chain, _re8_sources(args.backup, chain))
+    except (kpka.PakError, OSError) as e:
+        raise SystemExit(f'[FAIL] {e}')
+    errs = prune_re8.check_winners(plans, Progress('checking the replacing entries', rate=False))
+    if errs:
+        print('[FAIL] some replacing entries are not usable; nothing written:')
+        for e in errs[:10]:
+            print(f'    {e}')
+        return 1
+    total = 0
+    for d in plans:
+        if not d.remove:
+            continue
+        before = d.pak.file_size
+        note = ' (no entries left; the file is kept as an empty pak)' if d.emptied else ''
+        print(f'{os.path.basename(d.path)}: {len(d.remove)} replaced entries, '
+              f'{fmt_size(before)} -> {fmt_size(before - d.saved())}{note}')
+        total += d.saved()
+    print(f'total saved {fmt_size(total)}')
+    if args.dry_run:
+        return 0
+    if not total and all(d.source == d.path for d in plans):
+        print('nothing to remove')
+        return 0
+    manifest = _backup_manifest(args)
+    for d in plans:
+        if not d.remove and d.source == d.path:
+            continue
+        print(os.path.basename(d.path))
+        if d.source != d.path:
+            print(f'  source: using backup ({d.source})')
+        before = d.pak.file_size
+        ok = _re8_rewrite(
+            d.path, d.source, before, before - d.saved(), args, manifest,
+            write=lambda out, d=d: prune_re8.write(d, out, progress=Progress('writing')),
+            verify=lambda out, crcs: prune_re8.verify(out, crcs, progress=Progress('checking', rate=False)),
+            record={'prune': True})
+        if not ok:
+            return 1
+    return 0
+
+
 def cmd_restore(args) -> int:
     m = _load_manifest(args.backup)
     if not m['files']:
@@ -1146,6 +1194,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--dry-run', action='store_true', help='print the plan without changing anything')
     add_game_arg(p, games_with('lang') + LANG_MODULE_GAMES)
     p.set_defaults(func=cmd_lang)
+
+    p = sub.add_parser('prune', help='(re8) remove pak entries that a later patch pak replaces')
+    p.add_argument('dir', help='game folder')
+    p.add_argument('--backup', metavar='DIR',
+                   help='backup folder for the original .pak files; without it originals are replaced')
+    p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
+    add_game_arg(p, ('re8',))
+    p.set_defaults(func=cmd_prune)
 
     p = sub.add_parser('restore', help='restore originals from the backup')
     p.add_argument('--backup', required=True, metavar='DIR')

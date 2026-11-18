@@ -61,7 +61,7 @@ python -m tool lang "<GameDir>" --keep english --backup "<BackupDir>\lang" --gam
 - Removed packs and banks are not deleted from the pak. Each is replaced by an empty one of a few dozen bytes (a pack with its language map and no files, a bank with only its header), so the game still finds a valid file if it looks for one.
 - `--keep-for` is not available, because the game has no text -> voice language table in its files.
 - Only the paks that contain voice data are rewritten, and the rest of each pak is copied byte for byte. With `--backup`, the original paks are moved to the backup folder and `restore` puts them back.
-- `mipdrop` and `lang` change the same paks. Use a separate backup folder for each step (for example `<BackupDir>\mipdrop` and `<BackupDir>\lang`), run `mipdrop` first, and restore in reverse order (`lang` first). Running `mipdrop` again with its backup rebuilds the paks from the originals and brings the voices back; run `lang` again afterwards.
+- `mipdrop` and `lang` change the same paks. Use a separate backup folder for each step (for example `<BackupDir>\mipdrop` and `<BackupDir>\lang`), run `mipdrop` first, and restore in reverse order (`lang` first). `prune` ([guide/prune.md](prune.md)) rewrites the same paks too; run it after both and restore it first. Running `mipdrop` again with its backup rebuilds the paks from the originals and brings the voices back; run `lang` again afterwards.
 
 ## Notes
 

@@ -11,7 +11,7 @@ Requires Python 3.11+. Some steps need extra packages (for example NumPy, `lz4` 
 | God of War (2018) | `GoW.exe` | about 65 GB | about 25 GB | NumPy (`shvol` only) |
 | God of War Ragnarök | `GoWR.exe` | about 176 GB | about 70 GB | `lz4` |
 | SILENT HILL f | `SHf.exe` | about 50 GB | about 27 GB | `pyooz`, NumPy |
-| Resident Evil Village | `re8.exe` | about 38 GB | about 17 GB | none |
+| Resident Evil Village | `re8.exe` | about 38 GB | about 15 GB | none |
 
 - Install sizes are for `exec\` (God of War games) or the whole game folder (SILENT HILL f, Resident Evil Village).
 - "After the quick start" is the install size minus the savings of every quick start step (see [Results](#results)).
@@ -58,6 +58,7 @@ python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game shf
 ```bat
 python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game re8
 python -m tool lang "<GameDir>" --keep english --game re8
+python -m tool prune "<GameDir>" --game re8
 ```
 
 ## Results
@@ -93,8 +94,9 @@ The voice-over is stored inside `SHf-Windows.pak` and is small (about 66 MB Engl
 |---|---|---|---|
 | Textures (`.pak`) | `mipdrop --drop 2` | 17.9 GiB | Verified in game |
 | Voice languages (`.pak`) | `lang --keep english` | 3.3 GiB | Verified in game |
+| Replaced patch data (`.pak`) | `prune` | 1.6 GiB | Verified in game |
 
-The texture step took the whole game folder from about 38 GB to 20 GB. The voice step empties the voice packs and banks of the other eight languages inside the `.pak` files; run it after `mipdrop` and keep its backup in a separate folder (see [guide/lang.md](guide/lang.md#resident-evil-village)).
+The texture step took the whole game folder from about 38 GB to 20 GB. The voice step empties the voice packs and banks of the other eight languages inside the `.pak` files; run it after `mipdrop` and keep its backup in a separate folder (see [guide/lang.md](guide/lang.md#resident-evil-village)). `prune` removes the old copies of resources that a later patch pak replaces; run it last.
 
 ## Textures (`mipdrop`)
 
@@ -103,6 +105,10 @@ The texture step took the whole game folder from about 38 GB to 20 GB. The voice
 ## Lighting volumes (`shvol`)
 
 `shvol` halves the resolution of the spherical-harmonics (SH) lighting volumes in the `.wad` files of God of War (2018). What it changes, commands, options and checks are in [guide/shvol.md](guide/shvol.md).
+
+## Replaced patch data (`prune`)
+
+`prune` removes the entries of `re_chunk_000.pak` and its patch paks that a later patch pak replaces (Resident Evil Village only). What it removes, commands and the order with the other steps are in [guide/prune.md](guide/prune.md).
 
 ## Voice languages (`lang`)
 

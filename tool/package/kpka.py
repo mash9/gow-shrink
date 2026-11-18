@@ -230,13 +230,15 @@ def workers_for(workers: int | None) -> int:
 
 
 def write(pak: Pak, source: str, out: str, changes: dict[Blob, tuple],
-          worker: Callable[[tuple], tuple[bytes, int]], progress: Progress | None = None,
-          workers: int | None = None) -> dict[tuple[int, int], int]:
-    blobs = pak.blobs()
+          worker: Callable[[tuple], tuple[bytes, int]] | None, progress: Progress | None = None,
+          workers: int | None = None, remove: set[tuple[int, int]] | None = None) -> dict[tuple[int, int], int]:
+    entries = [e for e in pak.entries if not remove or e.key not in remove]
+    blobs = sorted({e.blob for e in entries})
     total = sum(cs for _, cs in blobs)
     placed: dict[Blob, tuple[int, int, int]] = {}
     crcs: dict[Blob, int] = {}
-    sizes = {e.blob: e.size for e in pak.entries}
+    sizes = {e.blob: e.size for e in entries}
+    table_end = PAK_HEADER.size + len(entries) * PAK_ENTRY.size
     done = 0
     window = max(8, workers_for(workers) * 4)
     it = iter([b for b in blobs if b in changes])
@@ -252,7 +254,7 @@ def write(pak: Pak, source: str, out: str, changes: dict[Blob, tuple],
                 pending[b] = ex.submit(worker, changes[b])
 
         fill()
-        o.write(b'\0' * pak.table_end)
+        o.write(b'\0' * table_end)
         for b in blobs:
             pos = o.tell()
             if b in changes:
@@ -278,13 +280,13 @@ def write(pak: Pak, source: str, out: str, changes: dict[Blob, tuple],
             if progress:
                 progress(done, total)
         o.seek(0)
-        o.write(PAK_HEADER.pack(PAK_MAGIC, pak.major, pak.minor, pak.flags, len(pak.entries), pak.tag))
-        for e in pak.entries:
+        o.write(PAK_HEADER.pack(PAK_MAGIC, pak.major, pak.minor, pak.flags, len(entries), pak.tag))
+        for e in entries:
             pos, cs, size = placed[e.blob]
             o.write(PAK_ENTRY.pack(e.lo, e.hi, pos, cs, size, e.attr, e.checksum))
     st = os.stat(source)
     os.utime(out, (st.st_atime, st.st_mtime))
-    return {e.key: crcs[e.blob] for e in pak.entries}
+    return {e.key: crcs[e.blob] for e in entries}
 
 
 Check = Callable[[bytes], 'str | None']
