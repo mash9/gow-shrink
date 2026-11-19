@@ -18,7 +18,9 @@ Requires Python 3.11+. Some steps need extra packages (for example NumPy, `lz4` 
 
 ![gow-shrink desktop app](images/app.png)
 
-`gow_shrink.pyw` in the repository folder runs the quick start steps below from a window. Double-click it, or run `python gow_shrink.pyw`. Pick the game in the list on the left, choose its folder, and press **Run** on each step. The games and their steps come from the `app` section of each game in `tool/games.json`. Turn on **Keep the original files** to move the originals to a backup folder (one subfolder per game and step, for example `<BackupDir>\gow-mipdrop`); undo a step with `python -m tool restore --backup "<BackupDir>\gow-mipdrop"`. Other commands and options are only available from the command line.
+The desktop app runs the quick start steps below from a window. Download `gow-shrink.exe` from the [Releases](https://github.com/mash9/gow-shrink/releases) page and double-click it. It needs no Python and already includes every extra package.
+
+Pick the game in the list on the left, choose its folder, and press **Run** on each step. The games and their steps come from the `app` section of each game in `tool/games.json`. Turn on **Keep the original files** to move the originals to a backup folder (one subfolder per game and step, for example `<BackupDir>\gow-mipdrop`). Other commands and options are only available from the command line.
 
 ## Quick start
 

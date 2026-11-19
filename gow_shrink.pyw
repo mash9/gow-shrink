@@ -4,6 +4,7 @@ import codecs
 import importlib
 import importlib.util
 import json
+import multiprocessing
 import os
 import queue
 import re
@@ -14,7 +15,9 @@ import tkinter as tk
 from dataclasses import dataclass
 from tkinter import filedialog, font as tkfont, messagebox
 
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+FROZEN = bool(getattr(sys, 'frozen', False))
+TOOL_FLAG = '--tool'
+ROOT_DIR = getattr(sys, '_MEIPASS', '') if FROZEN else os.path.dirname(os.path.abspath(__file__))
 GAMES_FILE = os.path.join(ROOT_DIR, 'tool', 'games.json')
 SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.gow-shrink.json')
 
@@ -114,7 +117,29 @@ def python_exe() -> str:
     return exe
 
 
+def tool_command(args) -> list[str]:
+    if FROZEN:
+        return [sys.executable, TOOL_FLAG, *args]
+    return [python_exe(), '-u', '-m', 'tool', *args]
+
+
+def run_tool(argv: list[str]) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            stream.reconfigure(encoding='utf-8', errors='replace', write_through=True)
+    from tool.cli import main as tool_main
+    try:
+        return tool_main(argv)
+    except SystemExit as e:
+        if isinstance(e.code, str):
+            print(e.code, file=sys.stderr)
+            return 1
+        return e.code or 0
+
+
 def missing_modules(names) -> list[str]:
+    if FROZEN:
+        return []
     out = []
     for spec in dict.fromkeys(names):
         module, _, package = spec.partition('=')
@@ -707,7 +732,7 @@ class App:
         self._paint_row(*self.running)
         self.rows[st.id]['bar'].set(0)
         self.rows[st.id]['info'].configure(text='Starting...', fg=C['faint'])
-        self._spawn([python_exe(), '-u', '-m', 'tool', *args], st.title, self._step_done)
+        self._spawn(tool_command(args), st.title, self._step_done)
 
     def _step_done(self, code: int) -> None:
         key, self.running = self.running, None
@@ -738,8 +763,8 @@ class App:
     def _spawn(self, cmd: list[str], label: str, on_done) -> None:
         if self.proc is not None:
             return
-        shown = ' '.join(f'"{a}"' if ' ' in a or '(' in a else a for a in cmd[1:] if a != '-u')
-        self._write(f'\n$ python {shown}\n')
+        shown = ' '.join(f'"{a}"' if ' ' in a or '(' in a else a for a in cmd[1:] if a not in ('-u', TOOL_FLAG))
+        self._write(f'\n$ {"gow-shrink" if FROZEN else "python"} {shown}\n')
         env = dict(os.environ, PYTHONIOENCODING='utf-8')
         flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         try:
@@ -873,6 +898,8 @@ def setup_window(root: tk.Tk) -> None:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == TOOL_FLAG:
+        return run_tool(sys.argv[2:])
     if os.name == 'nt':
         try:
             import ctypes
@@ -892,4 +919,5 @@ def main() -> int:
 
 
 if __name__ == '__main__':
+    multiprocessing.freeze_support()
     sys.exit(main())
