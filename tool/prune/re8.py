@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import zlib
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 
 from ..package import kpka
@@ -60,6 +61,100 @@ def plan(chain: list[str], sources: dict[str, str] | None = None) -> list[PakPru
             if w != d.path:
                 d.remove.add(e.key)
                 d.winners[e.key] = w
+    return out
+
+
+CompareItem = tuple[tuple[int, int], int, int, int, int, int, int, int]
+
+
+def _same_raw(fa, a_off: int, fb, b_off: int, size: int) -> bool:
+    fa.seek(a_off)
+    fb.seek(b_off)
+    left = size
+    while left:
+        n = min(left, kpka.COPY_CHUNK)
+        if fa.read(n) != fb.read(n):
+            return False
+        left -= n
+    return True
+
+
+def _compare_job(job: tuple[str, str, list[CompareItem]]) -> tuple[list[tuple[int, int]], int]:
+    dlc_src, base_src, items = job
+    same = []
+    done = 0
+    with open(dlc_src, 'rb') as fd, open(base_src, 'rb') as fb:
+        for key, d_off, d_cs, d_attr, b_off, b_cs, b_attr, size in items:
+            done += d_cs
+            dm, bm = d_attr & 0xf, b_attr & 0xf
+            if dm == bm and d_cs == b_cs and _same_raw(fd, d_off, fb, b_off, d_cs):
+                same.append(key)
+                continue
+            if dm == bm == kpka.METHOD_STORE:
+                continue
+            try:
+                fd.seek(d_off)
+                a = kpka.decode(dm, fd.read(d_cs), size)
+                fb.seek(b_off)
+                b = kpka.decode(bm, fb.read(b_cs), size)
+            except (PakError, zlib.error):
+                continue
+            if a == b:
+                same.append(key)
+    return same, done
+
+
+def dlc_plan(chain: list[str], dlc: list[str], sources: dict[str, str] | None = None,
+             progress: Progress | None = None, workers: int | None = None) -> list[PakPrune]:
+    sources = sources or {}
+    base: dict[tuple[int, int], tuple[str, kpka.Entry]] = {}
+    for p in sorted(chain, key=kpka.pak_order):
+        for e in Pak.open(p).entries:
+            base[e.key] = (p, e)
+    out = []
+    jobs = []
+    for p in sorted(dlc, key=kpka.pak_order):
+        src = sources.get(p, p)
+        pak = Pak.open(src)
+        errs = pak.check_layout()
+        if errs:
+            raise PakError(f'{os.path.basename(src)}: ' + '; '.join(errs[:3]))
+        keys = [e.key for e in pak.entries]
+        if len(set(keys)) != len(keys):
+            raise PakError(f'{os.path.basename(src)}: the same path appears twice in one pak')
+        d = PakPrune(p, src, pak)
+        out.append(d)
+        by_base: dict[str, list[CompareItem]] = {}
+        for e in pak.entries:
+            hit = base.get(e.key)
+            if hit is None or hit[1].size != e.size:
+                continue
+            bp, be = hit
+            d.winners[e.key] = bp
+            by_base.setdefault(bp, []).append(
+                (e.key, e.offset, e.csize, e.attr, be.offset, be.csize, be.attr, e.size))
+        for bp, items in by_base.items():
+            items.sort(key=lambda t: t[1])
+            chunk: list[CompareItem] = []
+            weight = 0
+            for it in items:
+                chunk.append(it)
+                weight += it[2]
+                if len(chunk) >= 256 or weight >= (256 << 20):
+                    jobs.append((len(out) - 1, (src, bp, chunk)))
+                    chunk, weight = [], 0
+            if chunk:
+                jobs.append((len(out) - 1, (src, bp, chunk)))
+    total = sum(it[2] for _, j in jobs for it in j[2])
+    done = 0
+    with ProcessPoolExecutor(max_workers=kpka.workers_for(workers)) as ex:
+        for (i, _), (same, n) in zip(jobs, ex.map(_compare_job, [j for _, j in jobs])):
+            out[i].remove.update(same)
+            done += n
+            if progress:
+                progress(done, total)
+    for d in out:
+        d.winners = {k: v for k, v in d.winners.items() if k in d.remove}
     return out
 
 

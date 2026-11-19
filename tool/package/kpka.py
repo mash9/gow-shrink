@@ -210,9 +210,13 @@ def pak_order(path: str) -> tuple:
     return (in_dlc, name, -1)
 
 
+def is_blank(path: str) -> bool:
+    return os.path.getsize(path) == 0
+
+
 def root_paks(root: str) -> list[str]:
     found = glob.glob(os.path.join(root, '*.pak')) + glob.glob(os.path.join(root, 'dlc', '*.pak'))
-    return sorted((os.path.abspath(p) for p in found), key=pak_order)
+    return sorted((os.path.abspath(p) for p in found if not is_blank(p)), key=pak_order)
 
 
 def find_paks(paths: Iterable[str]) -> list[str]:
@@ -220,7 +224,7 @@ def find_paks(paths: Iterable[str]) -> list[str]:
     for p in paths:
         if os.path.isdir(p):
             out += root_paks(p)
-        elif p.lower().endswith('.pak') and os.path.isfile(p):
+        elif p.lower().endswith('.pak') and os.path.isfile(p) and not is_blank(p):
             out.append(p)
     return sorted(dict.fromkeys(os.path.abspath(p) for p in out), key=pak_order)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections
+import functools
 import os
 import re
 import struct
@@ -13,13 +14,11 @@ from ..package import kpka
 from ..package.kpka import Entry, Pak, PakError, Progress, path_hash, read_entry, read_head
 
 TEX_MAGIC = b'TEX\0'
-TEX_VERSION = 30
 TEX_HEADER = 0x28
 TEX_MIP = struct.Struct('<QII')
 MDF_MAGIC = b'MDF\0'
 BASE_PREFIX = 'natives/stm/'
 STREAM_PREFIX = 'natives/stm/streaming/'
-TEX_SUFFIX = '.' + str(TEX_VERSION)
 TEX_PATH = re.compile(rb'(?:[\x20-\x7e]\x00){4,}\.\x00[tT]\x00[eE]\x00[xX]\x00')
 
 
@@ -60,19 +59,23 @@ def tex_header_size(head: bytes) -> int:
     return TEX_HEADER + TEX_MIP.size * head[14] * (head[15] >> 4)
 
 
-def read_tex(f, e: Entry) -> Tex:
+def tex_suffix(version: int) -> str:
+    return f'.{version}'
+
+
+def read_tex(f, e: Entry, version: int) -> Tex:
     head = read_head(f, e, 64)
     hs = tex_header_size(head)
     if hs > len(head):
         head = read_head(f, e, hs)
-    return parse_tex(head[:hs], e.size)
+    return parse_tex(head[:hs], version, e.size)
 
 
-def parse_tex(head: bytes, size: int | None = None) -> Tex:
+def parse_tex(head: bytes, version: int, size: int | None = None) -> Tex:
     hs = tex_header_size(head)
-    version, width, height, depth = struct.unpack_from('<IHHH', head, 4)
-    if version != TEX_VERSION:
-        raise TexError(f'TEX version {version}')
+    found, width, height, depth = struct.unpack_from('<IHHH', head, 4)
+    if found != version:
+        raise TexError(f'TEX version {found}, expected {version}')
     if len(head) < hs:
         raise TexError('header is cut short')
     images, mips = head[14], head[15] >> 4
@@ -92,8 +95,8 @@ def parse_tex(head: bytes, size: int | None = None) -> Tex:
     return tex
 
 
-def rebuild_tex(data: bytes, drop: int) -> bytes:
-    tex = parse_tex(data, len(data))
+def rebuild_tex(data: bytes, drop: int, version: int) -> bytes:
+    tex = parse_tex(data, version, len(data))
     if drop <= 0:
         return data
     if drop >= tex.mips:
@@ -115,13 +118,13 @@ def rebuild_tex(data: bytes, drop: int) -> bytes:
     return bytes(head) + b''.join(body)
 
 
-def check_tex(data: bytes) -> str | None:
+def check_tex(version: int, data: bytes) -> str | None:
     if data[:4] != TEX_MAGIC or len(data) < TEX_HEADER:
         return None
-    if struct.unpack_from('<I', data, 4)[0] != TEX_VERSION or not data[14] or not data[15] >> 4:
+    if struct.unpack_from('<I', data, 4)[0] != version or not data[14] or not data[15] >> 4:
         return None
     try:
-        parse_tex(data, len(data))
+        parse_tex(data, version, len(data))
     except TexError as e:
         return f'texture: {e}'
     return None
@@ -168,10 +171,11 @@ def texture_names(paks: dict[str, Pak], workers: int | None = None, progress: Pr
     return {clean_name(n) for n in names}
 
 
-def stream_map(names: Iterable[str]) -> dict[tuple[int, int], tuple[int, int]]:
+def stream_map(names: Iterable[str], version: int) -> dict[tuple[int, int], tuple[int, int]]:
+    suffix = tex_suffix(version)
     out = {}
     for n in names:
-        out[path_hash(STREAM_PREFIX + n + TEX_SUFFIX)] = path_hash(BASE_PREFIX + n + TEX_SUFFIX)
+        out[path_hash(STREAM_PREFIX + n + suffix)] = path_hash(BASE_PREFIX + n + suffix)
     return out
 
 
@@ -207,6 +211,7 @@ class PakPlan:
     path: str
     source: str
     pak: Pak
+    version: int
     textures: list[Texture] = field(default_factory=list)
     drops: dict[tuple[int, int], int] = field(default_factory=dict)
     skipped: collections.Counter = field(default_factory=collections.Counter)
@@ -232,7 +237,7 @@ class Plan:
     paks: list[PakPlan]
 
 
-def base_headers(paks: dict[str, Pak], keys: set[tuple[int, int]]) -> dict[tuple[int, int], Tex]:
+def base_headers(paks: dict[str, Pak], keys: set[tuple[int, int]], version: int) -> dict[tuple[int, int], Tex]:
     out: dict[tuple[int, int], Tex] = {}
     for src in sorted(paks, key=kpka.pak_order):
         pak = paks[src]
@@ -241,13 +246,13 @@ def base_headers(paks: dict[str, Pak], keys: set[tuple[int, int]]) -> dict[tuple
                 if e.key not in keys:
                     continue
                 try:
-                    out[e.key] = read_tex(f, e)
+                    out[e.key] = read_tex(f, e, version)
                 except TexError:
                     continue
     return out
 
 
-def make_plan(targets: list[str], context: list[str], policy, sources: dict[str, str] | None = None,
+def make_plan(targets: list[str], context: list[str], policy, version: int, sources: dict[str, str] | None = None,
               workers: int | None = None, progress: Progress | None = None) -> Plan:
     sources = sources or {}
     paks: dict[str, Pak] = {}
@@ -255,15 +260,15 @@ def make_plan(targets: list[str], context: list[str], policy, sources: dict[str,
         src = sources.get(p, p)
         paks[src] = Pak.open(src)
     names = texture_names(paks, workers, progress)
-    smap = stream_map(names)
+    smap = stream_map(names, version)
     present = {e.key for pak in paks.values() for e in pak.entries}
     smap = {s: b for s, b in smap.items() if s in present and b in present}
-    bases = base_headers(paks, set(smap.values()))
+    bases = base_headers(paks, set(smap.values()), version)
     plan = Plan(len(names), len(smap), [])
     for path in targets:
         src = sources.get(path, path)
         pak = paks[src]
-        pp = PakPlan(path, src, pak)
+        pp = PakPlan(path, src, pak, version)
         errs = pak.check_layout()
         if errs:
             raise PakError(f'{os.path.basename(src)}: ' + '; '.join(errs[:3]))
@@ -276,7 +281,7 @@ def make_plan(targets: list[str], context: list[str], policy, sources: dict[str,
                     continue
                 e = group[0]
                 try:
-                    tex = read_tex(f, e)
+                    tex = read_tex(f, e, version)
                 except TexError as ex:
                     pp.skipped[f'streamed texture: {ex}'] += 1
                     continue
@@ -305,21 +310,21 @@ def make_plan(targets: list[str], context: list[str], policy, sources: dict[str,
     return plan
 
 
-def _rebuild_job(job: tuple[str, int, int, int, int, int]) -> tuple[bytes, int]:
-    src, off, cs, size, attr, drop = job
+def _rebuild_job(job: tuple[str, int, int, int, int, int, int]) -> tuple[bytes, int]:
+    src, off, cs, size, attr, drop, version = job
     e = Entry(0, 0, off, cs, size, attr, 0)
     with open(src, 'rb') as f:
         data = read_entry(f, e)
-    new = rebuild_tex(data, drop)
+    new = rebuild_tex(data, drop, version)
     return kpka.encode(e.method, new), len(new)
 
 
 def write(pp: PakPlan, out: str, progress: Progress | None = None, workers: int | None = None) -> dict:
     sizes = {e.blob: (e.size, e.attr) for e in pp.pak.entries}
-    changes = {b: (pp.source, b[0], b[1], sizes[b][0], sizes[b][1], n) for b, n in pp.drops.items()}
+    changes = {b: (pp.source, b[0], b[1], sizes[b][0], sizes[b][1], n, pp.version) for b, n in pp.drops.items()}
     return kpka.write(pp.pak, pp.source, out, changes, _rebuild_job, progress, workers)
 
 
-def verify(path: str, crcs: dict | None = None, deep: bool = True, deep_keys: set | None = None,
+def verify(path: str, version: int, crcs: dict | None = None, deep: bool = True, deep_keys: set | None = None,
            progress: Progress | None = None, workers: int | None = None) -> list[str]:
-    return kpka.verify(path, crcs, deep, deep_keys, check_tex, progress, workers)
+    return kpka.verify(path, crcs, deep, deep_keys, functools.partial(check_tex, version), progress, workers)

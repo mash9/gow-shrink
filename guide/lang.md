@@ -1,6 +1,6 @@
 # lang: remove unused voice languages
 
-`lang` lists the installed voice languages and removes all but the ones you keep. It works on God of War (2018), God of War Ragnarök and Resident Evil Village.
+`lang` lists the installed voice languages and removes all but the ones you keep. It works on God of War (2018), God of War Ragnarök, Resident Evil 7 biohazard and Resident Evil Village.
 
 Back to the [README](../README.md).
 
@@ -12,6 +12,7 @@ Per-language audio lives in these places (relative to `exec\`):
 |---|---|---|---|
 | God of War (2018) | `sound\pc_le\<language>\`, `wad\pc_le\soundbanks\<language>\` | 12, 0.26-0.33 GiB each | about 3.2 GiB |
 | God of War Ragnarök | `sound\pc_le\<language>.0.audiopack` + `.audiopack.toc`, `wad\pc_le\soundbanks\<language>\` | 13 (adds `arabic`), 1.28-1.47 GiB each | about 16.7 GiB |
+| Resident Evil 7 biohazard | Wwise packs and banks inside the `.pak` files (see below) | 6, 0.35-0.39 GiB each | about 1.8 GiB |
 | Resident Evil Village | Wwise packs and banks inside the `.pak` files (see below) | 9, 0.40-0.42 GiB each | about 3.3 GiB |
 
 The locations and the voice id -> language name mapping for each game are in `tool/games.json`. Other `.audiopack` files (`root`, `valhalla`, and the per-area ones such as `010_midgard1a`) are never touched.
@@ -45,6 +46,19 @@ Keep several and move the others to a backup folder:
 ```bat
 python -m tool lang "<GameDir>" --keep english --keep japanese --backup "<BackupDir>\lang"
 ```
+
+## Resident Evil 7 biohazard
+
+Keeping only the English voice (`--keep english`) has been verified in game, together with `mipdrop` and `prune --dlc`.
+
+It works the same way as in Resident Evil Village (below). There are 6 voice languages (`english(us)`, `japanese`, `french(france)`, `german`, `italian`, `spanish(spain)`), each with 220 packs and 173 banks in `re_chunk_000.pak` and the DLC packs.
+
+```bat
+python -m tool lang "<GameDir>" --game re7
+python -m tool lang "<GameDir>" --keep english --backup "<BackupDir>\lang" --game re7
+```
+
+The same backup and order rules apply: a separate backup folder per step, `mipdrop` first, `prune` last.
 
 ## Resident Evil Village
 

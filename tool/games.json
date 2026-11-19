@@ -173,9 +173,58 @@
       ]
     }
   },
+  "re7": {
+    "title": "Resident Evil 7 biohazard",
+    "exe": "re7.exe",
+    "tex_version": 35,
+    "app": {
+      "name": "Resident Evil 7 biohazard",
+      "requires": [],
+      "install_dirs": [],
+      "steps": [
+        {
+          "id": "mipdrop",
+          "title": "Textures",
+          "text": "Shrinks every streamed texture to the resolution of its base copy (two mip levels down) and rewrites the .pak files.",
+          "saved": "41.7 GiB",
+          "args": [
+            "mipdrop",
+            "{game_dir}",
+            "--drop",
+            "2",
+            "--in-place"
+          ]
+        },
+        {
+          "id": "lang",
+          "title": "Voice languages",
+          "text": "Keeps the English voice-over and empties the other languages' voice packs and banks inside the .pak files.",
+          "saved": "1.8 GiB",
+          "args": [
+            "lang",
+            "{game_dir}",
+            "--keep",
+            "english"
+          ]
+        },
+        {
+          "id": "prune",
+          "title": "Duplicate DLC data",
+          "text": "Removes the entries of the DLC .pak files that are byte-identical copies of entries in re_chunk_000.pak.",
+          "saved": "6.0 GiB",
+          "args": [
+            "prune",
+            "{game_dir}",
+            "--dlc"
+          ]
+        }
+      ]
+    }
+  },
   "re8": {
     "title": "Resident Evil Village",
     "exe": "re8.exe",
+    "tex_version": 30,
     "app": {
       "name": "Resident Evil Village",
       "requires": [],

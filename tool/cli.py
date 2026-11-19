@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import functools
 import json
 import os
 import shutil
@@ -44,6 +45,7 @@ class GameInfo:
     texpack_version: int | None
     dirs: dict[str, tuple[str, ...]]
     lang: lang_mod.LangConfig | None = None
+    tex_version: int | None = None
 
 
 GAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'games.json')
@@ -54,7 +56,8 @@ def load_games(path: str = GAMES_FILE) -> dict[str, GameInfo]:
         raw = json.load(f)
     return {g: GameInfo(v['title'], v['exe'], v.get('texpack_version'),
                         {role: tuple(rel.replace('\\', '/').split('/')) for role, rel in v.get('dirs', {}).items()},
-                        lang_mod.LangConfig.from_json(v['lang']) if 'lang' in v else None)
+                        lang_mod.LangConfig.from_json(v['lang']) if 'lang' in v else None,
+                        v.get('tex_version'))
             for g, v in sorted(raw.items(), key=lambda kv: kv[1]['title'].casefold())}
 
 
@@ -67,7 +70,8 @@ GAMES = {g: i.title for g, i in GAME_INFO.items()}
 GAME_OF_VERSION = {i.texpack_version: g for g, i in GAME_INFO.items() if i.texpack_version is not None}
 GAME_EXE = {g: i.exe for g, i in GAME_INFO.items()}
 ARG_DIR_ROLES = (('paths', 'wad'), ('dir', 'wad'), ('exec_dir', 'exec'))
-LANG_MODULE_GAMES = ('re8',)
+KPKA_GAMES = games_with('tex_version')
+LANG_MODULE_GAMES = KPKA_GAMES
 
 
 def add_game_arg(p: argparse.ArgumentParser, games: tuple[str, ...] = tuple(GAME_INFO)) -> None:
@@ -346,12 +350,12 @@ def _mipdrop_shf(args) -> int:
     return 0
 
 
-def _re8_targets(paths: list[str]) -> tuple[list[str], list[str]]:
+def _re8_targets(paths: list[str], game: str) -> tuple[list[str], list[str]]:
     from .package import kpka
     targets = kpka.find_paks(paths)
     if not targets:
         raise SystemExit('no .pak files found in ' + ', '.join(paths))
-    root = kpka.find_root(paths[0], GAME_EXE['re8'])
+    root = kpka.find_root(paths[0], GAME_EXE[game])
     context = kpka.root_paks(root) if root else targets
     return targets, context
 
@@ -413,10 +417,11 @@ def _re8_rewrite(path: str, source: str, before: int, after: int, args, manifest
 def _re8_plan(args, policy, use_backup: bool):
     from .mipdrop import re8
     from .package import kpka
-    targets, context = _re8_targets(args.paths)
+    targets, context = _re8_targets(args.paths, args.game)
     sources = _re8_sources(args.backup, context) if use_backup else {}
     try:
-        return re8.make_plan(targets, context, policy, sources, progress=Progress('reading materials', rate=False))
+        return re8.make_plan(targets, context, policy, GAME_INFO[args.game].tex_version, sources,
+                             progress=Progress('reading materials', rate=False))
     except (kpka.PakError, OSError) as e:
         raise SystemExit(f'[FAIL] {e}')
 
@@ -466,19 +471,20 @@ def _scan_re8(args) -> int:
     return 0
 
 
-def check_re8_resource(data: bytes) -> str | None:
+def check_re8_resource(version: int, data: bytes) -> str | None:
     from .lang import re8 as lang_re8
     from .mipdrop import re8
-    return re8.check_tex(data) or lang_re8.check_sound(data)
+    return re8.check_tex(version, data) or lang_re8.check_sound(data)
 
 
 def _verify_re8(args) -> int:
     from .package import kpka
-    targets, _ = _re8_targets(args.paths)
+    targets, _ = _re8_targets(args.paths, args.game)
+    check = functools.partial(check_re8_resource, GAME_INFO[args.game].tex_version)
     bad = 0
     for path in targets:
         name = os.path.basename(path)
-        errs = kpka.verify(path, deep=not args.quick, check=check_re8_resource,
+        errs = kpka.verify(path, deep=not args.quick, check=check,
                            progress=None if args.quick else Progress(f'checking {name}', rate=False))
         if errs:
             bad += 1
@@ -526,8 +532,8 @@ def _mipdrop_re8(args) -> int:
         ok = _re8_rewrite(
             pp.path, pp.source, before, after, args, manifest,
             write=lambda out, pp=pp: re8.write(pp, out, progress=Progress('writing')),
-            verify=lambda out, crcs, keys=keys: re8.verify(out, crcs, deep=False, deep_keys=keys,
-                                                           progress=Progress('checking', rate=False)),
+            verify=lambda out, crcs, keys=keys, v=pp.version: re8.verify(
+                out, v, crcs, deep=False, deep_keys=keys, progress=Progress('checking', rate=False)),
             record={'policy': vars(policy)})
         if not ok:
             return 1
@@ -536,7 +542,7 @@ def _mipdrop_re8(args) -> int:
 
 
 def cmd_scan(args) -> int:
-    if args.game == 're8':
+    if args.game in KPKA_GAMES:
         return _scan_re8(args)
     if args.game == 'shf':
         return _scan_shf(args)
@@ -566,7 +572,7 @@ def cmd_scan(args) -> int:
 
 
 def cmd_verify(args) -> int:
-    if args.game == 're8':
+    if args.game in KPKA_GAMES:
         return _verify_re8(args)
     if args.game == 'shf':
         return _verify_shf(args)
@@ -638,7 +644,7 @@ def _check_free(directory: str, need: int) -> None:
 
 
 def cmd_mipdrop(args) -> int:
-    if args.game == 're8':
+    if args.game in KPKA_GAMES:
         return _mipdrop_re8(args)
     if args.game == 'shf':
         return _mipdrop_shf(args)
@@ -839,7 +845,7 @@ def cmd_wadsync(args) -> int:
 def cmd_prune(args) -> int:
     from .package import kpka
     from .prune import re8 as prune_re8
-    _, context = _re8_targets([args.dir])
+    _, context = _re8_targets([args.dir], args.game)
     chain = prune_re8.main_chain(context)
     try:
         plans = prune_re8.plan(chain, _re8_sources(args.backup, chain))
@@ -851,15 +857,26 @@ def cmd_prune(args) -> int:
         for e in errs[:10]:
             print(f'    {e}')
         return 1
+    dlc_plans = []
+    if args.dlc:
+        dlc = [p for p in context if prune_re8.is_dlc(p)]
+        try:
+            dlc_plans = prune_re8.dlc_plan(chain, dlc, _re8_sources(args.backup, dlc),
+                                           progress=Progress('comparing DLC entries with the main paks'))
+        except (kpka.PakError, OSError) as e:
+            raise SystemExit(f'[FAIL] {e}')
+    from_dlc = {id(d) for d in dlc_plans}
     total = 0
-    for d in plans:
+    for d in plans + dlc_plans:
         if not d.remove:
             continue
         before = d.pak.file_size
         note = ' (no entries left; the file is kept as an empty pak)' if d.emptied else ''
-        print(f'{os.path.basename(d.path)}: {len(d.remove)} replaced entries, '
+        what = 'copies of main pak entries' if id(d) in from_dlc else 'replaced entries'
+        print(f'{os.path.basename(d.path)}: {len(d.remove)} {what}, '
               f'{fmt_size(before)} -> {fmt_size(before - d.saved())}{note}')
         total += d.saved()
+    plans = plans + dlc_plans
     print(f'total saved {fmt_size(total)}')
     if args.dry_run:
         return 0
@@ -878,7 +895,7 @@ def cmd_prune(args) -> int:
             d.path, d.source, before, before - d.saved(), args, manifest,
             write=lambda out, d=d: prune_re8.write(d, out, progress=Progress('writing')),
             verify=lambda out, crcs: prune_re8.verify(out, crcs, progress=Progress('checking', rate=False)),
-            record={'prune': True})
+            record={'prune': 'dlc' if id(d) in from_dlc else True})
         if not ok:
             return 1
     return 0
@@ -1006,8 +1023,8 @@ def _lang_re8(args) -> int:
     from .lang import re8 as lang_re8
     from .package import kpka
     if args.keep_for:
-        raise SystemExit('--keep-for is not supported for Resident Evil Village; use --keep <voice language>')
-    targets, _ = _re8_targets([args.exec_dir])
+        raise SystemExit(f'--keep-for is not supported for {GAMES[args.game]}; use --keep <voice language>')
+    targets, _ = _re8_targets([args.exec_dir], args.game)
     try:
         scans = lang_re8.scan(targets, _re8_sources(args.backup, targets))
     except (kpka.PakError, OSError) as e:
@@ -1066,7 +1083,7 @@ def _lang_re8(args) -> int:
 
 
 def cmd_lang(args) -> int:
-    if args.game == 're8':
+    if args.game in KPKA_GAMES:
         return _lang_re8(args)
     lang = lang_mod
     cfg = GAME_INFO[args.game].lang
@@ -1139,7 +1156,7 @@ def cmd_lang(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m tool", description='Install size reduction tool for God of War (2018), God of War Ragnarok, '
-                                             'SILENT HILL f and Resident Evil Village on PC')
+                                             'SILENT HILL f, Resident Evil Village and Resident Evil 7 on PC')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     p = sub.add_parser('scan', help='report estimated sizes after removal')
@@ -1190,17 +1207,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--keep-for', action='append', metavar='CODE',
                    help='keep the voice used by this text language code, e.g. ko -> english(us) (repeatable)')
     p.add_argument('--backup', metavar='DIR',
-                   help='move removed files and folders (re8: the original .pak files) here instead of deleting them')
+                   help='move removed files and folders (re7/re8: the original .pak files) here instead of deleting them')
     p.add_argument('--dry-run', action='store_true', help='print the plan without changing anything')
     add_game_arg(p, games_with('lang') + LANG_MODULE_GAMES)
     p.set_defaults(func=cmd_lang)
 
-    p = sub.add_parser('prune', help='(re8) remove pak entries that a later patch pak replaces')
+    p = sub.add_parser('prune', help='(re7/re8) remove pak entries that a later patch pak replaces')
     p.add_argument('dir', help='game folder')
     p.add_argument('--backup', metavar='DIR',
                    help='backup folder for the original .pak files; without it originals are replaced')
+    p.add_argument('--dlc', action='store_true',
+                   help='also remove entries of the dlc paks that are byte-identical to the main paks')
     p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
-    add_game_arg(p, ('re8',))
+    add_game_arg(p, KPKA_GAMES)
     p.set_defaults(func=cmd_prune)
 
     p = sub.add_parser('restore', help='restore originals from the backup')
