@@ -88,7 +88,7 @@ def load_games(path: str = GAMES_FILE) -> list[Game]:
                       for s in app.get('steps', ()))
         games.append(Game(key, app.get('name', g.get('title', key)), g['exe'], tuple(app.get('requires', ())),
                           tuple(os.path.normpath(d) for d in app.get('install_dirs', ())), steps))
-    return sorted(games, key=lambda g: g.name.casefold())
+    return games
 
 
 def load_settings() -> dict:
@@ -540,7 +540,7 @@ class App:
         self._save()
 
     def _refresh_nav(self) -> None:
-        order = sorted(self.games.values(), key=lambda g: g.name.casefold())
+        order = list(self.games.values())
         for g in order:
             item = self.nav.get(g.key)
             if item is None:

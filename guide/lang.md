@@ -77,6 +77,10 @@ python -m tool lang "<GameDir>" --keep english --backup "<BackupDir>\lang" --gam
 - Only the paks that contain voice data are rewritten, and the rest of each pak is copied byte for byte. With `--backup`, the original paks are moved to the backup folder and `restore` puts them back.
 - `mipdrop` and `lang` change the same paks. Use a separate backup folder for each step (for example `<BackupDir>\mipdrop` and `<BackupDir>\lang`), run `mipdrop` first, and restore in reverse order (`lang` first). `prune` ([guide/prune.md](prune.md)) rewrites the same paks too; run it after both and restore it first. Running `mipdrop` again with its backup rebuilds the paks from the originals and brings the voices back; run `lang` again afterwards.
 
+## Resident Evil Requiem (not supported)
+
+The game verifies a signature on its `.pak` files, so it rejects any pak `lang` rewrites.
+
 ## Notes
 
 - `--keep` accepts the folder name or any unambiguous start of it (`english` = `english(us)`; `spanish` is ambiguous). Prefer the short form: if `python` is a batch-file launcher (for example a pyenv-win shim), `cmd` breaks arguments that contain parentheses.

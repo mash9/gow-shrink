@@ -58,7 +58,7 @@ def load_games(path: str = GAMES_FILE) -> dict[str, GameInfo]:
                         {role: tuple(rel.replace('\\', '/').split('/')) for role, rel in v.get('dirs', {}).items()},
                         lang_mod.LangConfig.from_json(v['lang']) if 'lang' in v else None,
                         v.get('tex_version'))
-            for g, v in sorted(raw.items(), key=lambda kv: kv[1]['title'].casefold())}
+            for g, v in raw.items()}
 
 
 def games_with(attr: str) -> tuple[str, ...]:

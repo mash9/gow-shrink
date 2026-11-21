@@ -2,7 +2,7 @@
 
 A tool that reduces the install size of PC games by rewriting or removing their resource files. Each supported game gets its own set of steps, such as lowering texture resolution, shrinking lighting data and removing voice-over languages you do not use, and each step is tested in game before it is listed. The games and their steps are defined in `tool/games.json`, and more games will be added.
 
-Requires Python 3.11+. Some steps need extra packages (for example NumPy, `lz4` or `pyooz`); they are listed with each game below, and the desktop app offers to install them.
+Requires Python 3.11+. Some steps need extra packages (for example NumPy, `lz4`, `pyooz` or `zstandard`); they are listed with each game below, and the desktop app offers to install them.
 
 ## Supported games
 
@@ -13,6 +13,12 @@ Requires Python 3.11+. Some steps need extra packages (for example NumPy, `lz4` 
 | Resident Evil 7 biohazard | `re7.exe` | about 65 GB | about 16 GB | - |
 | Resident Evil Village | `re8.exe` | about 38 GB | about 15 GB | - |
 | SILENT HILL f | `SHf.exe` | about 50 GB | about 27 GB | pyooz, numpy |
+
+## Unsupported games
+
+| Game | Executable | Reason |
+|---|---|---|
+| Resident Evil Requiem | `re9.exe` | The game verifies a signature on its `.pak` files, so it rejects any pak the tool rewrites. (RE7 and RE8 have no such check and are supported.) |
 
 ## Desktop app
 

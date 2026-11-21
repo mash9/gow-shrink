@@ -139,6 +139,10 @@ How it works:
 - Only the paks that contain streaming textures are rewritten (`re_chunk_000.pak`, `patch_006` and four DLC packs). With `--backup`, the originals are moved to the backup folder and `restore` puts them back. Keep `<BackupDir>` on the same drive as the game so the 27.5 GiB `re_chunk_000.pak` is moved instead of copied; the new files need about 17 GiB of free space.
 - `verify "<GameDir>" --game re8` decompresses every entry and checks every texture layout; `--quick` checks only the pak layout.
 
+## Resident Evil Requiem (not supported)
+
+The game verifies a signature on its `.pak` files, so it rejects any pak `mipdrop` rewrites.
+
 ## SILENT HILL f
 
 The textures are in `SHf\Content\Paks\SHf-Windows.ucas` (31.41 GiB), an Unreal Engine 5 IoStore container indexed by `SHf-Windows.utoc`. Given the game folder, the commands work on `SHf\Content\Paks` only; the Bonus Content app is not touched. Install the two extra packages first:
