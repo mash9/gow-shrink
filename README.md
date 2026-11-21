@@ -135,3 +135,13 @@ The voice-over is stored inside `SHf-Windows.pak` and is small (about 66 MB Engl
 ## Voice languages (`lang`)
 
 `lang` lists the installed voice languages and removes all but the ones you keep. In the Resident Evil games the voices are inside the `.pak` files, so `lang` rewrites the paks instead of moving folders. Where each game stores them, the text -> voice mapping, commands and options are in [guide/lang.md](guide/lang.md).
+
+## License
+
+Copyright (C) 2026 Park Geun-young (박근영).
+
+gow-shrink is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License version 3 as published by the Free
+Software Foundation. See [LICENSE](LICENSE). It is distributed in the hope that
+it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
