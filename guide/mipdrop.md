@@ -1,6 +1,6 @@
 # mipdrop: remove top texture mip levels
 
-`mipdrop` removes the top mip levels of every streamed texture and rewrites the `.texpack` files together with their `.toc` (God of War games), the `.pak` files (Resident Evil games) or the `.utoc`/`.ucas` container (SILENT HILL f). It was called `shrink` before, and `shrink` still works as an alias.
+`mipdrop` removes the top mip levels of every streamed texture and rewrites the `.texpack` files together with their `.toc` (God of War games), the `.pak` files (Resident Evil games and Atomic Heart) or the `.utoc`/`.ucas` container (SILENT HILL f). It was called `shrink` before, and `shrink` still works as an alias.
 
 Back to the [README](../README.md).
 
@@ -38,8 +38,32 @@ python -m tool verify "<GameDir>"
 | `--in-place` | Replace the files in the game folder |
 | `--out DIR` | Write the results to another folder instead (originals untouched) |
 | `--backup DIR` | With `--in-place`, move the originals here so `restore` can put them back |
-| `--game gow` / `--game gowr` / `--game re7` / `--game re8` / `--game shf` | Refuse files that belong to another game (default: detect from the files) |
+| `--game ah` / `--game gow` / `--game gowr` / `--game re7` / `--game re8` / `--game shf` | Refuse files that belong to another game (default: detect from the files) |
 | `--dry-run` | Print the plan without writing anything |
+
+## Atomic Heart
+
+All resources are in 19 Unreal Engine 4 `.pak` files in `AtomicHeart\Content\Paks\` (151.7 GiB). No extra packages are needed. `scan` and `verify` are not available for this game; use `--dry-run`.
+
+```bat
+python -m tool mipdrop "<GameDir>" --drop 2 --in-place --dry-run --game ah
+python -m tool mipdrop "<GameDir>" --drop 2 --in-place --backup "<BackupDir>\mipdrop" --game ah
+```
+
+| Setting | Textures | Texture data removed (before pak compression) |
+|---|---|---|
+| **`--drop 2`** | **12,615** | **about 25.3 GiB** |
+
+Not yet verified in game. With `--drop 2`, 4096 textures become 1024, 2048 become 512 and 1024 become 256.
+
+How it works:
+
+- Only packages that hold a single `Texture2D` are changed (14,926 of the 14,930 with streamed mips; 4 use optional `.uptnl` payloads and are skipped). Lightmaps and shadowmaps in the `*_BuiltData` packages are not touched.
+- Each texture's top mip records are removed from its `.uexp`, `FirstMipToSerialize` is raised by the same number and the stored size is kept, which is how the game's own textures that were cooked with a LOD bias look. The removed mips are cut from the front of the `.ubulk`. The remaining mip offsets, the skip offset, the export size and the bulk data start in the `.uasset` are updated.
+- At least one streamed mip always remains, so a texture with one streamed mip is left as it is.
+- Textures used by the UI are left as they are: those under a `/UI/` folder and those that widget blueprints, Slate assets or UI materials (including material instances whose parent is a UI material) reference. The tool reads the package headers of all paks to find them (about 15 seconds). A texture that the game loads only by a path in code or in an ini file cannot be found this way.
+- The paks are rewritten with the compression they already have, so `mipdrop` can run before or after `repack` ([guide/repack.md](repack.md)). Each new pak is checked (every entry decompressed and compared) before it replaces the original.
+- With `--backup`, every run rebuilds from the backed-up original, so a second run does not remove more levels. Files that `lang` has removed from the game pak since then stay removed.
 
 ## God of War (2018)
 
@@ -138,10 +162,6 @@ How it works:
 - Each changed texture gets new width, height, mip count and mip offsets; the remaining mips are copied unchanged and recompressed with deflate. The rest of the pak is copied byte for byte in the original order. The entry checksums are kept: the game does not check them.
 - Only the paks that contain streaming textures are rewritten (`re_chunk_000.pak`, `patch_006` and four DLC packs). With `--backup`, the originals are moved to the backup folder and `restore` puts them back. Keep `<BackupDir>` on the same drive as the game so the 27.5 GiB `re_chunk_000.pak` is moved instead of copied; the new files need about 17 GiB of free space.
 - `verify "<GameDir>" --game re8` decompresses every entry and checks every texture layout; `--quick` checks only the pak layout.
-
-## Resident Evil Requiem (not supported)
-
-The game verifies a signature on its `.pak` files, so it rejects any pak `mipdrop` rewrites.
 
 ## SILENT HILL f
 

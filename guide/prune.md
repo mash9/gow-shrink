@@ -53,10 +53,6 @@ python -m tool restore --backup "<BackupDir>\prune"
 - Some installs ship the patch paks as empty 0-byte files (Resident Evil 7 biohazard). These are skipped; the chain is then `re_chunk_000.pak` alone and there is nothing to remove.
 - Running `prune` again changes nothing.
 
-## Resident Evil Requiem (not supported)
-
-The game verifies a signature on its `.pak` files, so it rejects any pak `prune` rewrites.
-
 ## DLC copies (`--dlc`)
 
 The DLC paks of Resident Evil 7 biohazard store full copies of many resources of `re_chunk_000.pak`. `--dlc` removes the copies from the DLC paks and keeps the one in the main paks:

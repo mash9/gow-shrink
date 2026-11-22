@@ -72,6 +72,8 @@ GAME_EXE = {g: i.exe for g, i in GAME_INFO.items()}
 ARG_DIR_ROLES = (('paths', 'wad'), ('dir', 'wad'), ('exec_dir', 'exec'))
 KPKA_GAMES = games_with('tex_version')
 LANG_MODULE_GAMES = KPKA_GAMES
+REPACK_GAMES = ('ah',)
+TEXTURE_GAMES = tuple(g for g in GAME_INFO if g not in REPACK_GAMES)
 
 
 def add_game_arg(p: argparse.ArgumentParser, games: tuple[str, ...] = tuple(GAME_INFO)) -> None:
@@ -643,7 +645,86 @@ def _check_free(directory: str, need: int) -> None:
                          f'need {fmt_size(need)} + 1 GiB margin')
 
 
+def _mipdrop_ah(args) -> int:
+    from .mipdrop import ue4
+    from .package import uepak
+    policy = policy_from(args)
+    if bool(args.out) == bool(args.in_place):
+        raise SystemExit('specify exactly one of --out DIR or --in-place')
+    paks = uepak.find_paks(args.paths)
+    if not paks:
+        raise SystemExit('no .pak files found in ' + ', '.join(args.paths))
+    sources = _re8_sources(args.backup, paks) if args.in_place else {}
+    folders = sorted({os.path.dirname(os.path.abspath(p)) for p in paks})
+    every = uepak.find_paks(folders)
+    try:
+        ui = ue4.ui_textures(every, Progress('finding textures used by the UI', rate=False))
+    except (uepak.PakError, OSError) as e:
+        raise SystemExit(f'[FAIL] {e}')
+    print(f'{len(ui)} packages are referenced by widgets, Slate assets or UI materials')
+    plans = []
+    by_res: collections.Counter = collections.Counter()
+    for path in paks:
+        source = sources.get(path, path)
+        try:
+            plan = ue4.plan_pak(path, source, policy, Progress(f'reading {os.path.basename(path)}', rate=False),
+                                ui=ui)
+        except (uepak.PakError, ue4.PackageError, OSError) as e:
+            raise SystemExit(f'[FAIL] {os.path.basename(path)}: {e}')
+        if not plan.textures and source == path:
+            continue
+        note = ' (source: backup)' if source != path else ''
+        print(f'{os.path.basename(path)}: {len(plan.textures)} textures, '
+              f'removes {fmt_size(plan.removed)} of texture data{note}')
+        if plan.ui:
+            print(f'  {plan.ui} UI textures left as they are')
+        for reason, n in sorted(plan.skipped.items(), key=lambda x: -x[1]):
+            print(f'  [SKIP] {n} textures: {reason}')
+        for t in plan.textures:
+            by_res[(t.max_dim, t.max_dim >> t.drop)] += 1
+        plans.append(plan)
+    total = sum(p.removed for p in plans)
+    print(f'total: {sum(len(p.textures) for p in plans)} textures, removes {fmt_size(total)} '
+          f'of texture data (before pak compression)')
+    for (a, b), n in sorted(by_res.items(), reverse=True):
+        print(f'  {a:5d} -> {b:5d}: {n} textures')
+    if args.dry_run or not plans:
+        return 0
+    manifest = _backup_manifest(args, args.in_place)
+    if args.out:
+        os.makedirs(args.out, exist_ok=True)
+    for plan in plans:
+        path, source = plan.path, plan.source
+        print(os.path.basename(path))
+        before = os.path.getsize(path)
+        pak = plan.pak
+        method = uepak.pak_method(pak)
+        if source != path:
+            current = uepak.Pak.open(path)
+            method = uepak.pak_method(current)
+            gone = {p for p, _ in pak.files()} - {p for p, _ in current.files()}
+            if gone:
+                print(f'  {len(gone)} files that are no longer in the game pak are left out')
+                pak = uepak.without(pak, gone)
+
+        def write(out, plan=plan, pak=pak, method=method):
+            r = uepak.write(pak, plan.source, out, method, changes=plan.changes,
+                            progress=Progress('writing'))
+            return r.expect
+
+        def verify(out, expect, pak=pak):
+            return uepak.verify(out, pak, expect, progress=Progress('checking', rate=False))
+
+        ok = _re8_rewrite(path, source, before, max(before, plan.pak.file_size), args, manifest,
+                          write=write, verify=verify, record={'policy': vars(policy)})
+        if not ok:
+            return 1
+    return 0
+
+
 def cmd_mipdrop(args) -> int:
+    if args.game == 'ah':
+        return _mipdrop_ah(args)
     if args.game in KPKA_GAMES:
         return _mipdrop_re8(args)
     if args.game == 'shf':
@@ -1082,7 +1163,74 @@ def _lang_re8(args) -> int:
     return 0
 
 
+def _lang_ah(args) -> int:
+    from .lang import ah as lang_ah
+    from .package import uepak
+    if args.keep_for:
+        raise SystemExit(f'--keep-for is not supported for {GAMES[args.game]}; use --keep <voice language>')
+    paks = uepak.find_paks([args.exec_dir])
+    if not paks:
+        raise SystemExit(f'no .pak files found in {args.exec_dir}')
+    try:
+        scans = lang_ah.scan(paks)
+    except (uepak.PakError, OSError) as e:
+        raise SystemExit(f'[FAIL] {e}')
+    installed = lang_ah.installed(scans)
+    if not installed:
+        raise SystemExit(f'no voice language data found in the .pak files under {args.exec_dir}')
+    keep = _match_keep([lang_ah.resolve(k) for k in args.keep or []], installed)
+
+    if not keep:
+        print(f'{"voice language":24} {"voice":>12} {"files":>6}  {"lip-sync":>12} {"files":>6}')
+        for name, g in installed.items():
+            lip = f'{fmt_size(g.lipsync_size)} {g.lipsync_files:6}' if g.lipsync_files else f'{"-":>12} {"":6}'
+            print(f'{name:24} {fmt_size(g.size)} {g.files:6}  {lip}')
+        print()
+        print('choose what to keep with --keep <voice language>')
+        return 0
+
+    unknown = keep - set(installed)
+    if unknown:
+        raise SystemExit(f'not installed: {", ".join(sorted(unknown))}; installed: {", ".join(installed)}')
+    lang_ah.plan_removal(scans, keep)
+    remove = [n for n in installed if n not in keep]
+    freed = sum(ps.saved() for ps in scans)
+    print(f'keep: {", ".join(sorted(keep))}')
+    lip = sorted({lang_ah.LIPSYNC[n] for n in remove if n in lang_ah.LIPSYNC and installed[n].lipsync_files})
+    print(f'remove: {", ".join(remove) or "-"} (about {fmt_size(freed)} before pak compression)')
+    if lip:
+        print(f'  with their lip-sync animations: L10N/{", L10N/".join(lip)}')
+    if args.dry_run:
+        return 0
+    if not freed:
+        print('nothing to remove')
+        return 0
+    manifest = _backup_manifest(args)
+    for ps in scans:
+        if not ps.remove:
+            continue
+        print(os.path.basename(ps.path))
+        print(f'  {len(ps.remove)} files removed ({fmt_size(ps.saved())} before pak compression)')
+        before = os.path.getsize(ps.path)
+        pak = uepak.without(ps.pak, ps.remove)
+
+        def write(out, pak=pak, ps=ps):
+            return uepak.write(pak, ps.path, out, None, progress=Progress('writing')).expect
+
+        def verify(out, expect, pak=pak):
+            return uepak.verify(out, pak, expect, progress=Progress('checking', rate=False))
+
+        ok = _re8_rewrite(ps.path, ps.path, before, before, args, manifest, write=write, verify=verify,
+                          record={'keep': sorted(keep)})
+        if not ok:
+            return 1
+    print(f'freed about {fmt_size(freed)}' + (' (after deleting the backup folder)' if args.backup else ''))
+    return 0
+
+
 def cmd_lang(args) -> int:
+    if args.game == 'ah':
+        return _lang_ah(args)
     if args.game in KPKA_GAMES:
         return _lang_re8(args)
     lang = lang_mod
@@ -1154,15 +1302,64 @@ def cmd_lang(args) -> int:
     return 0
 
 
+def cmd_repack(args) -> int:
+    from .package import uepak
+    paks = uepak.find_paks(args.paths)
+    if not paks:
+        raise SystemExit('no .pak files found in ' + ', '.join(args.paths))
+    plans = []
+    total_before = total_after = 0
+    for path in paks:
+        name = os.path.basename(path)
+        source = path
+        try:
+            pak = uepak.Pak.open(source)
+        except (uepak.PakError, OSError) as e:
+            print(f'[SKIP] {name}: {e}')
+            continue
+        if uepak.compressed_count(pak):
+            print(f'[SKIP] {name}: already compressed')
+            continue
+        before = os.path.getsize(path)
+        after = uepak.estimate(pak, source, args.method, args.level)
+        print(f'{name}: {len(pak.entries)} entries, {fmt_size(before)} -> about {fmt_size(after)}')
+        total_before += before
+        total_after += after
+        plans.append((path, source, pak, before, after))
+    print(f'total {fmt_size(total_before)} -> about {fmt_size(total_after)} '
+          f'(saves about {fmt_size(total_before - total_after)}, estimated from samples)')
+    if args.dry_run or not plans:
+        return 0
+    manifest = _backup_manifest(args)
+    for path, source, pak, before, after in plans:
+        print(os.path.basename(path))
+        result = {}
+
+        def write(out, pak=pak, source=source):
+            result['r'] = uepak.write(pak, source, out, args.method, args.level, workers=args.workers,
+                                      progress=Progress('compressing'))
+            return result['r'].expect
+
+        def verify(out, expect, pak=pak):
+            return uepak.verify(out, pak, expect, workers=args.workers,
+                                progress=Progress('checking', rate=False))
+
+        ok = _re8_rewrite(path, source, before, before, args, manifest, write=write, verify=verify,
+                          record={'repack': args.method, 'level': args.level})
+        if not ok:
+            return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m tool", description='Install size reduction tool for God of War (2018), God of War Ragnarok, '
+    ap = argparse.ArgumentParser(prog="python -m tool", description='Install size reduction tool for Atomic Heart, God of War (2018), God of War Ragnarok, '
                                              'SILENT HILL f, Resident Evil Village and Resident Evil 7 on PC')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     p = sub.add_parser('scan', help='report estimated sizes after removal')
     p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc/.pak files or folders')
     add_policy_args(p)
-    add_game_arg(p)
+    add_game_arg(p, TEXTURE_GAMES)
     p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser('mipdrop', aliases=['shrink'],
@@ -1181,7 +1378,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser('verify', help='check texpack/.toc integrity (and Ragnarok wad streaming info)')
     p.add_argument('paths', nargs='+', help='game folder, .texpack/.utoc/.pak files or folders')
     p.add_argument('--quick', action='store_true', help='skip block header and wad checks')
-    add_game_arg(p)
+    add_game_arg(p, TEXTURE_GAMES)
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser('wadsync', help='(gowr) update .wad texture streaming info to match the texpacks')
@@ -1209,7 +1406,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--backup', metavar='DIR',
                    help='move removed files and folders (re7/re8: the original .pak files) here instead of deleting them')
     p.add_argument('--dry-run', action='store_true', help='print the plan without changing anything')
-    add_game_arg(p, games_with('lang') + LANG_MODULE_GAMES)
+    add_game_arg(p, games_with('lang') + LANG_MODULE_GAMES + REPACK_GAMES)
     p.set_defaults(func=cmd_lang)
 
     p = sub.add_parser('prune', help='(re7/re8) remove pak entries that a later patch pak replaces')
@@ -1221,6 +1418,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
     add_game_arg(p, KPKA_GAMES)
     p.set_defaults(func=cmd_prune)
+
+    p = sub.add_parser('repack', help='(ah) compress the entries of uncompressed Unreal Engine 4 .pak files')
+    p.add_argument('paths', nargs='+', help='game folder, .pak files or folders')
+    p.add_argument('--method', choices=['zlib', 'lz4'], default='zlib',
+                   help='compression method (default: zlib)')
+    p.add_argument('--level', type=int, default=6, metavar='N',
+                   help='compression level (zlib 1-9, lz4 1-12; default: 6)')
+    p.add_argument('--workers', type=int, metavar='N', help='worker processes (default: CPU count - 1)')
+    p.add_argument('--backup', metavar='DIR',
+                   help='backup folder for the original .pak files; without it originals are replaced')
+    p.add_argument('--dry-run', action='store_true', help='print the estimate without writing anything')
+    add_game_arg(p, REPACK_GAMES)
+    p.set_defaults(func=cmd_repack)
 
     p = sub.add_parser('restore', help='restore originals from the backup')
     p.add_argument('--backup', required=True, metavar='DIR')

@@ -1,15 +1,16 @@
 # lang: remove unused voice languages
 
-`lang` lists the installed voice languages and removes all but the ones you keep. It works on God of War (2018), God of War Ragnarök, Resident Evil 7 biohazard and Resident Evil Village.
+`lang` lists the installed voice languages and removes all but the ones you keep. It works on Atomic Heart, God of War (2018), God of War Ragnarök, Resident Evil 7 biohazard and Resident Evil Village.
 
 Back to the [README](../README.md).
 
 ## Where the voices are
 
-Per-language audio lives in these places (relative to `exec\`):
+Per-language audio lives in these places (relative to `exec\` for the God of War games):
 
 | Game | Voice audio | Voice languages | Saved by keeping one |
 |---|---|---|---|
+| Atomic Heart | Wwise files and lip-sync animations inside the `.pak` files (see below) | 10, 1.49-1.77 GiB each | about 15.1 GiB (English) |
 | God of War (2018) | `sound\pc_le\<language>\`, `wad\pc_le\soundbanks\<language>\` | 12, 0.26-0.33 GiB each | about 3.2 GiB |
 | God of War Ragnarök | `sound\pc_le\<language>.0.audiopack` + `.audiopack.toc`, `wad\pc_le\soundbanks\<language>\` | 13 (adds `arabic`), 1.28-1.47 GiB each | about 16.7 GiB |
 | Resident Evil 7 biohazard | Wwise packs and banks inside the `.pak` files (see below) | 6, 0.35-0.39 GiB each | about 1.8 GiB |
@@ -47,6 +48,24 @@ Keep several and move the others to a backup folder:
 python -m tool lang "<GameDir>" --keep english --keep japanese --backup "<BackupDir>\lang"
 ```
 
+## Atomic Heart
+
+Not yet verified in game.
+
+The voice-over is stored inside the `.pak` files (`pakchunk0`, `pakchunk12`, `pakchunk13`) in `AtomicHeart/Content/WwiseAudio/Windows/<language>/`: `.wem` media, `.bnk` banks and their `.json`/`.xml` info files. The languages are `Chinese(CN)`, `English(US)`, `French(FR)`, `German(DE)`, `Italian(IT)`, `Japanese(JP)`, `Polish(PL)`, `Portuguese(BR)`, `Ru` (Russian) and `Spanish(ES)`. `Radio/` holds radio music, not a language, and is never touched.
+
+```bat
+python -m tool lang "<GameDir>" --game ah
+python -m tool lang "<GameDir>" --keep english --backup "<BackupDir>\lang" --game ah
+```
+
+- Four languages also have face animations for lip-sync in `AtomicHeart/Content/L10N/<culture>/` (`pakchunk1`): `en-US` (0.94 GiB), `ru-RU` (0.20 GiB), `pt-BR` (0.13 GiB) and `de-DE` (0.13 GiB). When a voice language is removed, its lip-sync folder is removed too, and the game then uses the default animation stored outside `L10N`. `L10N/ja-JP` holds regional textures and materials, not lip-sync, and is never touched.
+- The `de-DE` animations are byte-identical copies of the `en-US` ones.
+- Removed files are taken out of the pak index, and folders that become empty are removed from it too; the rest of each pak is copied as is, with the compression it already has. With `--backup`, the original paks are moved to the backup folder and `restore` puts them back.
+- `lang` always starts from the pak in the game folder, so it keeps what `mipdrop` and `repack` have changed, and running it again removes nothing more. To bring a removed language back, use `restore`.
+- `--keep russian` selects `Ru`. `--keep-for` is not available.
+- It has not been checked whether the game picks the `L10N` folder by text language or by voice language. Keep the game's voice language set to one you keep.
+
 ## Resident Evil 7 biohazard
 
 Keeping only the English voice (`--keep english`) has been verified in game, together with `mipdrop` and `prune --dlc`.
@@ -76,10 +95,6 @@ python -m tool lang "<GameDir>" --keep english --backup "<BackupDir>\lang" --gam
 - `--keep-for` is not available, because the game has no text -> voice language table in its files.
 - Only the paks that contain voice data are rewritten, and the rest of each pak is copied byte for byte. With `--backup`, the original paks are moved to the backup folder and `restore` puts them back.
 - `mipdrop` and `lang` change the same paks. Use a separate backup folder for each step (for example `<BackupDir>\mipdrop` and `<BackupDir>\lang`), run `mipdrop` first, and restore in reverse order (`lang` first). `prune` ([guide/prune.md](prune.md)) rewrites the same paks too; run it after both and restore it first. Running `mipdrop` again with its backup rebuilds the paks from the originals and brings the voices back; run `lang` again afterwards.
-
-## Resident Evil Requiem (not supported)
-
-The game verifies a signature on its `.pak` files, so it rejects any pak `lang` rewrites.
 
 ## Notes
 

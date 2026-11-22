@@ -1,77 +1,43 @@
 # gow-shrink
 
-A tool that reduces the install size of PC games by rewriting or removing their resource files. Each supported game gets its own set of steps, such as lowering texture resolution, shrinking lighting data and removing voice-over languages you do not use, and each step is tested in game before it is listed. The games and their steps are defined in `tool/games.json`, and more games will be added.
+Reduces the install size of PC games by lowering texture resolution, removing unused voice languages and recompressing game files.
 
-Requires Python 3.11+. Some steps need extra packages (for example NumPy, `lz4`, `pyooz` or `zstandard`); they are listed with each game below, and the desktop app offers to install them.
+Requires Python 3.11+. Extra packages needed by some games are listed below.
 
 ## Supported games
 
-| Game | Executable | Install size | After the quick start | Extra packages |
+| Game | Executable | Install size | After all steps | Extra packages |
 |---|---|---|---|---|
+| Atomic Heart | `AtomicHeart.exe` | about 158 GB | not yet measured | - |
 | God of War (2018) | `GoW.exe` | about 65 GB | about 25 GB | numpy |
 | God of War Ragnarök | `GoWR.exe` | about 176 GB | about 70 GB | lz4 |
 | Resident Evil 7 biohazard | `re7.exe` | about 65 GB | about 16 GB | - |
 | Resident Evil Village | `re8.exe` | about 38 GB | about 15 GB | - |
 | SILENT HILL f | `SHf.exe` | about 50 GB | about 27 GB | pyooz, numpy |
 
-## Unsupported games
-
-| Game | Executable | Reason |
-|---|---|---|
-| Resident Evil Requiem | `re9.exe` | The game verifies a signature on its `.pak` files, so it rejects any pak the tool rewrites. (RE7 and RE8 have no such check and are supported.) |
-
 ## Desktop app
 
 ![gow-shrink desktop app](images/app.png)
 
-The desktop app runs the quick start steps below from a window. Download `gow-shrink.exe` from the [Releases](https://github.com/mash9/gow-shrink/releases) page and double-click it. It needs no Python and already includes every extra package.
+The desktop app runs the recommended steps of each game from a window. Download `gow-shrink.exe` from the [Releases](https://github.com/mash9/gow-shrink/releases) page and double-click it. It needs no Python and already includes every extra package.
 
 Pick the game in the list on the left, choose its folder, and press **Run** on each step. The games and their steps come from the `app` section of each game in `tool/games.json`. Turn on **Keep the original files** to move the originals to a backup folder (one subfolder per game and step, for example `<BackupDir>\gow-mipdrop`). Other commands and options are only available from the command line.
 
-## Quick start
+## Command line
 
-Run the commands from the repository folder in Command Prompt. Replace `<GameDir>` with the folder that contains the game's `.exe`, and keep the quotes. Given the game folder, each command finds the subfolder it works on (for example `exec\wad\pc_le`, `exec` or `SHf\Content\Paks`) by itself; you can still pass that subfolder, or single files, directly. The per-game executable names and subfolders are listed in `tool/games.json`. These commands replace game files directly, so run each one once and start the game after each step. To keep the originals so a step can be undone with `restore`, add `--backup "<BackupDir>"` (see each tool's section below).
-
-### God of War (2018)
-
-```bat
-python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game gow
-python -m tool shvol "<GameDir>" --game gow
-python -m tool lang "<GameDir>" --keep english --game gow
-```
-
-### God of War Ragnarök
-
-```bat
-python -m pip install lz4
-python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game gowr
-python -m tool lang "<GameDir>" --keep english --game gowr
-```
-
-### Resident Evil 7 biohazard
-
-```bat
-python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game re7
-python -m tool lang "<GameDir>" --keep english --game re7
-python -m tool prune "<GameDir>" --dlc --game re7
-```
-
-### Resident Evil Village
-
-```bat
-python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game re8
-python -m tool lang "<GameDir>" --keep english --game re8
-python -m tool prune "<GameDir>" --game re8
-```
-
-### SILENT HILL f
-
-```bat
-python -m pip install pyooz numpy
-python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game shf
-```
+The recommended steps of each game can also be run from Command Prompt, with Python 3.11+ and the extra packages listed above. The commands for each game, and how to pass the game folder and keep a backup, are in [guide/commands.md](guide/commands.md).
 
 ## Results
+
+### Atomic Heart
+
+| Step | Command | Saved | Status |
+|---|---|---|---|
+| Textures (`.pak`) | `mipdrop --drop 2` | about 25.3 GiB of texture data | Not yet verified in game |
+| Voice languages and lip-sync (`.pak`) | `lang --keep english` | about 15.1 GiB | Not yet verified in game |
+| Compression (`.pak`) | `repack` | about 66.8 GiB on unmodified paks | Not yet verified in game |
+
+The values are estimates from `--dry-run` before compression; after `mipdrop` and `lang`, `repack` saves less on its own. All resources are in 19 uncompressed Unreal Engine 4 `.pak` files (151.7 GiB). Textures used by the UI are left as they are. Run the steps in the order of the table (see [guide/repack.md](guide/repack.md#order-with-the-other-steps)).
 
 ### God of War (2018)
 
@@ -120,21 +86,15 @@ The texture step took the whole game folder from about 38 GB to 20 GB. The voice
 
 The voice-over is stored inside `SHf-Windows.pak` and is small (about 66 MB English, 90 MB Japanese), so there is no `lang` step for this game.
 
-## Textures (`mipdrop`)
+## Tools
 
-`mipdrop` removes the top mip levels of every streamed texture in the `.texpack` files (God of War games), the `.pak` files (Resident Evil games) or the `.utoc`/`.ucas` container (SILENT HILL f). Settings, savings per game, options and the game specifics are in [guide/mipdrop.md](guide/mipdrop.md).
-
-## Lighting volumes (`shvol`)
-
-`shvol` halves the resolution of the spherical-harmonics (SH) lighting volumes in the `.wad` files of God of War (2018). What it changes, commands, options and checks are in [guide/shvol.md](guide/shvol.md).
-
-## Replaced patch data (`prune`)
-
-`prune` removes the entries of `re_chunk_000.pak` and its patch paks that a later patch pak replaces (Resident Evil games). With `--dlc` it also removes the entries of the DLC paks that are byte-identical copies of entries in the main paks. What it removes, commands and the order with the other steps are in [guide/prune.md](guide/prune.md).
-
-## Voice languages (`lang`)
-
-`lang` lists the installed voice languages and removes all but the ones you keep. In the Resident Evil games the voices are inside the `.pak` files, so `lang` rewrites the paks instead of moving folders. Where each game stores them, the text -> voice mapping, commands and options are in [guide/lang.md](guide/lang.md).
+| Tool | What it does | Games |
+|---|---|---|
+| [`mipdrop`](guide/mipdrop.md) | Removes the top mip levels of streamed textures | All |
+| [`lang`](guide/lang.md) | Removes voice languages you do not keep | All but SILENT HILL f |
+| [`shvol`](guide/shvol.md) | Halves the resolution of the SH lighting volumes | God of War (2018) |
+| [`prune`](guide/prune.md) | Removes pak entries replaced by later patches or copied in DLC paks | Resident Evil 7, Resident Evil Village |
+| [`repack`](guide/repack.md) | Compresses uncompressed `.pak` files | Atomic Heart |
 
 ## License
 

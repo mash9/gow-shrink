@@ -1,4 +1,55 @@
 {
+  "ah": {
+    "title": "Atomic Heart",
+    "exe": "AtomicHeart.exe",
+    "dirs": {
+      "wad": "AtomicHeart/Content/Paks",
+      "exec": "AtomicHeart/Content/Paks"
+    },
+    "app": {
+      "name": "Atomic Heart",
+      "requires": [],
+      "install_dirs": [],
+      "steps": [
+        {
+          "id": "mipdrop",
+          "title": "Textures",
+          "text": "Removes the top two mip levels of every streamed texture (textures used by the UI are left as they are) and rewrites the .pak files.",
+          "saved": "25.3 GiB",
+          "args": [
+            "mipdrop",
+            "{game_dir}",
+            "--drop",
+            "2",
+            "--in-place"
+          ],
+          "repeat_warning": "Without a backup, running it again removes two more mip levels."
+        },
+        {
+          "id": "lang",
+          "title": "Voice languages",
+          "text": "Keeps the English voice-over and removes the other languages' Wwise files and lip-sync animations from the .pak files.",
+          "saved": "15.1 GiB",
+          "args": [
+            "lang",
+            "{game_dir}",
+            "--keep",
+            "english"
+          ]
+        },
+        {
+          "id": "repack",
+          "title": "Compress .pak files",
+          "text": "Compresses the entries of the uncompressed .pak files with zlib. Voice and video files are left as they are.",
+          "saved": "66.8 GiB",
+          "args": [
+            "repack",
+            "{game_dir}"
+          ]
+        }
+      ]
+    }
+  },
   "gow": {
     "title": "God of War (2018)",
     "exe": "GoW.exe",

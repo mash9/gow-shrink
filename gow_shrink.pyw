@@ -668,7 +668,7 @@ class App:
 
     def _update_backup(self) -> None:
         if not self.use_backup.get():
-            text = 'Off: the original files are replaced or deleted, as in the quick start.'
+            text = 'Off: the original files are replaced or deleted.'
         elif self.backup_dir:
             text = (f'Originals are moved to {self.backup_dir}\\<game>-<step>. Undo a step with: '
                     f'python -m tool restore --backup "{self.backup_dir}\\<game>-<step>"')
