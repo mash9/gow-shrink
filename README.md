@@ -15,6 +15,12 @@ Requires Python 3.11+. Extra packages needed by some games are listed below.
 | Resident Evil Village | `re8.exe` | about 38 GB | about 15 GB | - |
 | SILENT HILL f | `SHf.exe` | about 50 GB | about 27 GB | pyooz, numpy |
 
+## Unsupported games
+
+| Game | Executable | Reason |
+|---|---|---|
+| Resident Evil Requiem | `re9.exe` | The game verifies a signature on its `.pak` files, so it rejects any pak the tool rewrites. (RE7 and RE8 have no such check and are supported.) |
+
 ## Desktop app
 
 ![gow-shrink desktop app](images/app.png)
