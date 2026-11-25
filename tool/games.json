@@ -14,16 +14,30 @@
         {
           "id": "mipdrop",
           "title": "Textures",
-          "text": "Removes the top two mip levels of every streamed texture (textures used by the UI are left as they are) and rewrites the .pak files.",
-          "saved": "25.3 GiB",
+          "text": "Removes the top mip level of every streamed texture (textures used by the UI are left as they are) and rewrites the .pak files.",
+          "saved": "20.6 GiB",
           "args": [
             "mipdrop",
             "{game_dir}",
             "--drop",
-            "2",
+            "1",
             "--in-place"
           ],
-          "repeat_warning": "Without a backup, running it again removes two more mip levels."
+          "repeat_warning": "Without a backup, running it again removes one more mip level."
+        },
+        {
+          "id": "lightmap",
+          "title": "Lightmaps",
+          "text": "Removes the top mip level of the baked lightmap and shadowmap textures and rewrites the .pak files.",
+          "saved": "30.7 GiB",
+          "args": [
+            "lightmap",
+            "{game_dir}",
+            "--drop",
+            "1",
+            "--in-place"
+          ],
+          "repeat_warning": "Without a backup, running it again removes one more mip level."
         },
         {
           "id": "lang",

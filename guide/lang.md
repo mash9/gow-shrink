@@ -50,7 +50,7 @@ python -m tool lang "<GameDir>" --keep english --keep japanese --backup "<Backup
 
 ## Atomic Heart
 
-Not yet verified in game.
+Keeping only the English voice (`--keep english`) has been verified in game, together with `mipdrop --drop 1` and `repack`.
 
 The voice-over is stored inside the `.pak` files (`pakchunk0`, `pakchunk12`, `pakchunk13`) in `AtomicHeart/Content/WwiseAudio/Windows/<language>/`: `.wem` media, `.bnk` banks and their `.json`/`.xml` info files. The languages are `Chinese(CN)`, `English(US)`, `French(FR)`, `German(DE)`, `Italian(IT)`, `Japanese(JP)`, `Polish(PL)`, `Portuguese(BR)`, `Ru` (Russian) and `Spanish(ES)`. `Radio/` holds radio music, not a language, and is never touched.
 

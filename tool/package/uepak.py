@@ -327,9 +327,9 @@ def _job(job: tuple) -> list:
                 raise PakError(f'short read at {pos}')
             out.append(_blocks(method, level, data))
         else:
-            _, e, cut, data = item
+            _, e, cut, data, keep, patch = item
             if data is None:
-                data = read_entry(f, e, src_method)[cut:]
+                data = splice(read_entry(f, e, src_method)[cut:], keep, patch)
             sha = hashlib.sha1(data).digest()
             out.append((_blocks(method, level, data) if method and data else None, data, sha))
     return out
@@ -339,13 +339,29 @@ def _job(job: tuple) -> list:
 class Change:
     data: bytes | None = None
     cut: int = 0
+    keep: tuple[tuple[int, int], ...] | None = None
+    patch: tuple[tuple[int, bytes], ...] = ()
+
+
+def splice(data: bytes, keep: tuple[tuple[int, int], ...] | None = None,
+           patch: tuple[tuple[int, bytes], ...] = ()) -> bytes:
+    if keep is not None:
+        data = b''.join(data[s:s + n] for s, n in keep)
+    if patch:
+        b = bytearray(data)
+        for pos, v in patch:
+            if pos < 0 or pos + len(v) > len(b):
+                raise PakError(f'patch at {pos} is outside the entry')
+            b[pos:pos + len(v)] = v
+        data = bytes(b)
+    return data
 
 
 def _plan(pak: Pak, method: str | None, skip: set[int], changes: dict[int, Change]):
     for e in pak.ordered():
         c = changes.get(e.loc)
         if c is not None:
-            yield e, 'change', [('entry', e, c.cut, c.data)]
+            yield e, 'change', [('entry', e, c.cut, c.data, c.keep, c.patch)]
         elif e.method or not method or e.loc in skip:
             yield e, 'copy', []
         else:

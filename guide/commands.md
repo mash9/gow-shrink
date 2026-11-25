@@ -9,14 +9,15 @@ Back to the [README](../README.md).
 - Run the commands from the repository folder in Command Prompt.
 - Replace `<GameDir>` with the folder that contains the game's `.exe`, and keep the quotes. Given the game folder, each command finds the subfolder it works on (for example `exec\wad\pc_le`, `exec` or `SHf\Content\Paks`) by itself; you can still pass that subfolder, or single files, directly. The per-game executable names and subfolders are listed in `tool/games.json`.
 - Without `--backup`, these commands replace game files directly, so run each one once and start the game after each step.
-- To keep the originals so a step can be undone with `restore`, add `--backup "<BackupDir>"` and use a separate folder for each step. Options and details are in the guide of each command: [mipdrop](mipdrop.md), [shvol](shvol.md), [lang](lang.md), [prune](prune.md), [repack](repack.md).
+- To keep the originals so a step can be undone with `restore`, add `--backup "<BackupDir>"` and use a separate folder for each step. Options and details are in the guide of each command: [mipdrop](mipdrop.md), [shvol](shvol.md), [lang](lang.md), [prune](prune.md), [lightmap](lightmap.md), [repack](repack.md).
 
 ## Atomic Heart
 
-Not yet verified in game; keep a backup.
+Verified in game with all four steps.
 
 ```bat
-python -m tool mipdrop "<GameDir>" --drop 2 --in-place --backup "<BackupDir>\mipdrop" --game ah
+python -m tool mipdrop "<GameDir>" --drop 1 --in-place --backup "<BackupDir>\mipdrop" --game ah
+python -m tool lightmap "<GameDir>" --drop 1 --in-place --backup "<BackupDir>\lightmap" --game ah
 python -m tool lang "<GameDir>" --keep english --backup "<BackupDir>\lang" --game ah
 python -m tool repack "<GameDir>" --backup "<BackupDir>\repack" --game ah
 ```

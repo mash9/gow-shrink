@@ -4,7 +4,7 @@
 
 Back to the [README](../README.md).
 
-Not yet verified in game.
+Verified in game (zlib), after `mipdrop --drop 1` and `lang --keep english`: the 19 paks went from 131.1 GiB to 57.7 GiB. `lightmap` was run after it on the compressed paks and also works. LZ4 (`--method lz4`) has not been tried.
 
 ## Why
 
@@ -54,4 +54,4 @@ python -m tool restore --backup "<BackupDir>\repack"
 
 ## Order with the other steps
 
-`repack` always starts from the pak in the game folder, so it keeps what `mipdrop` and `lang` have already changed. `mipdrop` and `lang` write their results with the compression the game pak already has. Running `repack` last compresses the least data; the desktop app runs the steps in the order `mipdrop`, `lang`, `repack`.
+`repack` always starts from the pak in the game folder, so it keeps what `mipdrop`, `lightmap` and `lang` have already changed. `mipdrop`, `lightmap` and `lang` write their results with the compression the game pak already has. Running `repack` last compresses the least data; the desktop app runs the steps in the order `mipdrop`, `lightmap`, `lang`, `repack`.

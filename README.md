@@ -8,7 +8,7 @@ Requires Python 3.11+. Extra packages needed by some games are listed below.
 
 | Game | Executable | Install size | After all steps | Extra packages |
 |---|---|---|---|---|
-| Atomic Heart | `AtomicHeart.exe` | about 158 GB | not yet measured | - |
+| Atomic Heart | `AtomicHeart.exe` | about 158 GB | about 55 GB | - |
 | God of War (2018) | `GoW.exe` | about 65 GB | about 25 GB | numpy |
 | God of War Ragnarök | `GoWR.exe` | about 176 GB | about 70 GB | lz4 |
 | Resident Evil 7 biohazard | `re7.exe` | about 65 GB | about 16 GB | - |
@@ -33,11 +33,12 @@ The recommended steps of each game can also be run from Command Prompt, with Pyt
 
 | Step | Command | Saved | Status |
 |---|---|---|---|
-| Textures (`.pak`) | `mipdrop --drop 2` | about 25.3 GiB of texture data | Not yet verified in game |
-| Voice languages and lip-sync (`.pak`) | `lang --keep english` | about 15.1 GiB | Not yet verified in game |
-| Compression (`.pak`) | `repack` | about 66.8 GiB on unmodified paks | Not yet verified in game |
+| Textures (`.pak`) | `mipdrop --drop 1` | 20.6 GiB (paks 151.7 → 131.1 GiB) | Verified in game |
+| Lightmaps (`.pak`) | `lightmap --drop 1` | 30.7 GiB of texture data (12.3 GiB in compressed paks) | Verified in game |
+| Voice languages and lip-sync (`.pak`) | `lang --keep english` | about 15.1 GiB | Verified in game |
+| Compression (`.pak`) | `repack` | about 66.8 GiB on unmodified paks | Verified in game |
 
-The values are estimates from `--dry-run` before compression; after `mipdrop` and `lang`, `repack` saves less on its own. All resources are in 19 uncompressed Unreal Engine 4 `.pak` files (151.7 GiB). Textures used by the UI are left as they are. Run the steps in the order of the table (see [guide/repack.md](guide/repack.md#order-with-the-other-steps)).
+All four steps were applied to one install and the game was played without problems; the 19 paks went from 151.7 GiB to 45.4 GiB (`mipdrop` 151.7 → 131.1 GiB, then `lang` and `repack` → 57.7 GiB, then `lightmap` → 45.4 GiB) and the whole game folder to about 55 GB. `lightmap` ran last here, on the compressed paks. The `lang` and `repack` values are estimates from `--dry-run`; after `mipdrop` and `lang`, `repack` saves less on its own. All resources are in 19 uncompressed Unreal Engine 4 `.pak` files (151.7 GiB). Textures used by the UI are left as they are. Run the steps in the order of the table (see [guide/repack.md](guide/repack.md#order-with-the-other-steps)).
 
 ### God of War (2018)
 
@@ -92,6 +93,7 @@ The voice-over is stored inside `SHf-Windows.pak` and is small (about 66 MB Engl
 |---|---|---|
 | [`mipdrop`](guide/mipdrop.md) | Removes the top mip levels of streamed textures | All |
 | [`lang`](guide/lang.md) | Removes voice languages you do not keep | All but SILENT HILL f |
+| [`lightmap`](guide/lightmap.md) | Removes the top mip levels of baked lightmaps and shadowmaps | Atomic Heart |
 | [`shvol`](guide/shvol.md) | Halves the resolution of the SH lighting volumes | God of War (2018) |
 | [`prune`](guide/prune.md) | Removes pak entries replaced by later patches or copied in DLC paks | Resident Evil 7, Resident Evil Village |
 | [`repack`](guide/repack.md) | Compresses uncompressed `.pak` files | Atomic Heart |

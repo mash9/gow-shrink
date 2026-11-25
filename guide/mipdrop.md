@@ -46,15 +46,16 @@ python -m tool verify "<GameDir>"
 All resources are in 19 Unreal Engine 4 `.pak` files in `AtomicHeart\Content\Paks\` (151.7 GiB). No extra packages are needed. `scan` and `verify` are not available for this game; use `--dry-run`.
 
 ```bat
-python -m tool mipdrop "<GameDir>" --drop 2 --in-place --dry-run --game ah
-python -m tool mipdrop "<GameDir>" --drop 2 --in-place --backup "<BackupDir>\mipdrop" --game ah
+python -m tool mipdrop "<GameDir>" --drop 1 --in-place --dry-run --game ah
+python -m tool mipdrop "<GameDir>" --drop 1 --in-place --backup "<BackupDir>\mipdrop" --game ah
 ```
 
-| Setting | Textures | Texture data removed (before pak compression) |
-|---|---|---|
-| **`--drop 2`** | **12,615** | **about 25.3 GiB** |
+| Setting | Textures | Texture data removed (before pak compression) | Notes |
+|---|---|---|---|
+| **`--drop 1`** | **12,615** | **20.6 GiB** (paks 151.7 → 131.1 GiB) | **Recommended.** 4096 → 2048, 2048 → 1024, 1024 → 512 |
+| `--drop 2` | 12,615 | about 25.3 GiB | 4096 → 1024, 2048 → 512, 1024 → 256. Clearly blurrier in game |
 
-Not yet verified in game. With `--drop 2`, 4096 textures become 1024, 2048 become 512 and 1024 become 256.
+`--drop 1` has been verified in game, together with `lang` and `repack`. Most of the game's texture data is in 2048 and 4096 textures, and normal maps are shrunk too, so `--drop 2` loses a lot of detail; the second level saves only about 5 GiB more. Running `--drop 1` again without a backup would remove 5.05 GiB more from 11,370 textures.
 
 How it works:
 

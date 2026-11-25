@@ -722,6 +722,78 @@ def _mipdrop_ah(args) -> int:
     return 0
 
 
+def cmd_lightmap(args) -> int:
+    from .lightmap import ah as lm
+    from .mipdrop import ue4
+    from .package import uepak
+    policy = policy_from(args)
+    if bool(args.out) == bool(args.in_place):
+        raise SystemExit('specify exactly one of --out DIR or --in-place')
+    paks = uepak.find_paks(args.paths)
+    if not paks:
+        raise SystemExit('no .pak files found in ' + ', '.join(args.paths))
+    sources = _re8_sources(args.backup, paks) if args.in_place else {}
+    plans = []
+    by_res: collections.Counter = collections.Counter()
+    by_cls: collections.Counter = collections.Counter()
+    for path in paks:
+        source = sources.get(path, path)
+        try:
+            plan = lm.plan_pak(path, source, policy, Progress(f'reading {os.path.basename(path)}', rate=False))
+        except (uepak.PakError, ue4.PackageError, OSError) as e:
+            raise SystemExit(f'[FAIL] {os.path.basename(path)}: {e}')
+        if not plan.textures and source == path:
+            continue
+        note = ' (source: backup)' if source != path else ''
+        print(f'{os.path.basename(path)}: {plan.packages} packages, {len(plan.textures)} lightmap textures, '
+              f'removes {fmt_size(plan.removed)} of texture data{note}')
+        for reason, n in sorted(plan.skipped.items(), key=lambda x: -x[1]):
+            print(f'  [SKIP] {n} packages: {reason}')
+        for t in plan.textures:
+            by_res[(t.max_dim, t.max_dim >> t.drop)] += 1
+            by_cls[t.cls] += t.cut
+        plans.append(plan)
+    total = sum(p.removed for p in plans)
+    print(f'total: {sum(p.packages for p in plans)} packages, {sum(len(p.textures) for p in plans)} textures, '
+          f'removes {fmt_size(total)} of texture data (before pak compression)')
+    for cls, n in sorted(by_cls.items()):
+        print(f'  {cls}: {fmt_size(n)}')
+    for (a, b), n in sorted(by_res.items(), reverse=True):
+        print(f'  {a:5d} -> {b:5d}: {n} textures')
+    if args.dry_run or not plans:
+        return 0
+    manifest = _backup_manifest(args, args.in_place)
+    if args.out:
+        os.makedirs(args.out, exist_ok=True)
+    for plan in plans:
+        path, source = plan.path, plan.source
+        print(os.path.basename(path))
+        before = os.path.getsize(path)
+        pak = plan.pak
+        method = uepak.pak_method(pak)
+        if source != path:
+            current = uepak.Pak.open(path)
+            method = uepak.pak_method(current)
+            gone = {p for p, _ in pak.files()} - {p for p, _ in current.files()}
+            if gone:
+                print(f'  {len(gone)} files that are no longer in the game pak are left out')
+                pak = uepak.without(pak, gone)
+
+        def write(out, plan=plan, pak=pak, method=method):
+            r = uepak.write(pak, plan.source, out, method, changes=plan.changes,
+                            progress=Progress('writing'))
+            return r.expect
+
+        def verify(out, expect, pak=pak):
+            return uepak.verify(out, pak, expect, progress=Progress('checking', rate=False))
+
+        ok = _re8_rewrite(path, source, before, max(before, plan.pak.file_size), args, manifest,
+                          write=write, verify=verify, record={'lightmap': vars(policy)})
+        if not ok:
+            return 1
+    return 0
+
+
 def cmd_mipdrop(args) -> int:
     if args.game == 'ah':
         return _mipdrop_ah(args)
@@ -1418,6 +1490,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
     add_game_arg(p, KPKA_GAMES)
     p.set_defaults(func=cmd_prune)
+
+    p = sub.add_parser('lightmap', help='(ah) remove top mip levels of the baked lightmap and shadowmap textures')
+    p.add_argument('paths', nargs='+', help='game folder, .pak files or folders')
+    add_policy_args(p)
+    p.add_argument('--out', metavar='DIR', help='write results to this folder (originals untouched)')
+    p.add_argument('--in-place', action='store_true',
+                   help='replace files in the game folder; originals are moved to --backup')
+    p.add_argument('--backup', metavar='DIR',
+                   help='backup folder for originals (for --in-place); without it originals are replaced')
+    p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
+    add_game_arg(p, REPACK_GAMES)
+    p.set_defaults(func=cmd_lightmap)
 
     p = sub.add_parser('repack', help='(ah) compress the entries of uncompressed Unreal Engine 4 .pak files')
     p.add_argument('paths', nargs='+', help='game folder, .pak files or folders')
