@@ -23,6 +23,7 @@ TASK_BYTES = 8 << 20
 HEAD_PLAIN = 53
 SKIP_EXTS = ('.wem', '.bnk', '.mp4', '.bk2', '.bik', '.ogg', '.opus')
 METHODS = {'zlib': 'Zlib', 'lz4': 'LZ4'}
+CODECS = {'zlib': 'zlib', 'lz4': 'lz4', 'oodle': 'oodle'}
 
 
 class PakError(Exception):
@@ -269,6 +270,23 @@ def skipped_locs(pak: Pak, skip_exts: tuple[str, ...]) -> set[int]:
     return {e.loc for p, e in pak.files() if p.lower().endswith(skip_exts) or e.usize == 0}
 
 
+def uncompressed_targets(pak: Pak, skip_exts: tuple[str, ...] = SKIP_EXTS) -> list[Entry]:
+    skip = skipped_locs(pak, skip_exts)
+    return [e for e in pak.ordered() if not e.method and e.loc not in skip]
+
+
+def slot_methods(names) -> tuple[str | None, ...]:
+    return tuple(CODECS.get(n.lower()) if n else None for n in names)
+
+
+def _codec(slots, e: Entry) -> str:
+    if isinstance(slots, str):
+        return slots
+    if slots is None or not 0 < e.method <= len(slots) or slots[e.method - 1] is None:
+        raise PakError(f'entry at {e.offset} uses an unsupported compression method index {e.method}')
+    return slots[e.method - 1]
+
+
 def _compress(method: str, level: int, data: bytes) -> bytes:
     if method == 'zlib':
         return zlib.compress(data, level)
@@ -279,6 +297,12 @@ def _compress(method: str, level: int, data: bytes) -> bytes:
 def _decompress(method: str, data: bytes, size: int) -> bytes:
     if method == 'zlib':
         return zlib.decompress(data)
+    if method == 'oodle':
+        import ooz
+        out = ooz.decompress(data, size)
+        if len(out) != size:
+            raise PakError('Oodle block decompressed to the wrong size')
+        return out
     import lz4.block
     return lz4.block.decompress(data, uncompressed_size=size)
 
@@ -293,17 +317,18 @@ def _handle(path: str):
     return f
 
 
-def read_entry(f, e: Entry, method: str | None) -> bytes:
+def read_entry(f, e: Entry, method) -> bytes:
     f.seek(e.data_start())
     if not e.method:
         data = f.read(e.usize)
         if len(data) != e.usize:
             raise PakError(f'short read at {e.offset}')
         return data
+    codec = _codec(method, e)
     out = []
     left = e.usize
     for cs in e.blocks:
-        out.append(_decompress(method, f.read(cs), min(e.block_size, left)))
+        out.append(_decompress(codec, f.read(cs), min(e.block_size, left)))
         left -= len(out[-1])
     if left:
         raise PakError(f'entry at {e.offset} does not decompress to its size')
@@ -357,12 +382,12 @@ def splice(data: bytes, keep: tuple[tuple[int, int], ...] | None = None,
     return data
 
 
-def _plan(pak: Pak, method: str | None, skip: set[int], changes: dict[int, Change]):
+def _plan(pak: Pak, method: str | None, skip: set[int], changes: dict[int, Change], compress_unchanged: bool = True):
     for e in pak.ordered():
         c = changes.get(e.loc)
         if c is not None:
             yield e, 'change', [('entry', e, c.cut, c.data, c.keep, c.patch)]
-        elif e.method or not method or e.loc in skip:
+        elif e.method or not method or e.loc in skip or not compress_unchanged:
             yield e, 'copy', []
         else:
             start = e.data_start()
@@ -408,11 +433,29 @@ def _read_hash(f, e: Entry) -> bytes:
 def pak_method(pak: Pak) -> str | None:
     if not compressed_count(pak):
         return None
-    name = pak.names[0].lower()
-    for k, v in METHODS.items():
-        if v.lower() == name:
-            return k
-    raise PakError(f'unsupported compression method {pak.names[0]}')
+    for n in pak.names:
+        for k, v in METHODS.items():
+            if n and v.lower() == n.lower():
+                return k
+    if not any(pak.names):
+        raise PakError('compressed entries but no compression method names')
+    return None
+
+
+def output_names(pak: Pak, method: str | None) -> list[str]:
+    names = [n for n in pak.names if n]
+    if method and not any(n.lower() == METHODS[method].lower() for n in names):
+        names.append(METHODS[method])
+    if len(names) > NAME_SLOTS:
+        raise PakError('no free compression method slot')
+    return names
+
+
+def _method_index(names: list[str], codec: str) -> int:
+    for i, n in enumerate(names):
+        if CODECS.get(n.lower()) == codec:
+            return i + 1
+    raise PakError(f'{codec} is not among the compression methods')
 
 
 @dataclass
@@ -427,7 +470,7 @@ class Result:
 def write(pak: Pak, source: str, out: str, method: str | None = 'zlib', level: int = 6,
           changes: dict[int, Change] | None = None, skip_exts: tuple[str, ...] = SKIP_EXTS,
           min_gain: float = 0.0, workers: int | None = None,
-          progress: Callable[[int, int], None] | None = None) -> Result:
+          progress: Callable[[int, int], None] | None = None, compress_unchanged: bool = True) -> Result:
     if method is not None and method not in METHODS:
         raise PakError(f'unknown method {method}')
     src_method = pak_method(pak)
@@ -435,10 +478,13 @@ def write(pak: Pak, source: str, out: str, method: str | None = 'zlib', level: i
         raise PakError(f'the pak is compressed with {src_method}, not {method}')
     method = method or src_method
     changes = changes or {}
+    src_slots = slot_methods(pak.names)
+    names = output_names(pak, method)
+    new_index = _method_index(names, method) if method else 0
     skip = skipped_locs(pak, skip_exts)
     total = sum(e.usize for e in pak.entries.values())
     workers = workers or max(1, (os.cpu_count() or 2) - 1)
-    plan = list(_plan(pak, method, skip, changes))
+    plan = list(_plan(pak, method, skip, changes, compress_unchanged))
     new: dict[int, Entry] = {}
     expect: dict[int, tuple[str, bytes]] = {}
     pending: dict[int, list] = collections.defaultdict(list)
@@ -448,7 +494,7 @@ def write(pak: Pak, source: str, out: str, method: str | None = 'zlib', level: i
             cf.ProcessPoolExecutor(workers) as pool:
         for e, _, _ in plan:
             expect[e.loc] = ('c' if e.method else 'u', _read_hash(src, e))
-        jobs = _jobs(plan, source, src_method, method, level)
+        jobs = _jobs(plan, source, src_slots, method, level)
         window: collections.deque = collections.deque()
 
         def fill() -> None:
@@ -472,7 +518,8 @@ def write(pak: Pak, source: str, out: str, method: str | None = 'zlib', level: i
             here = dst.tell()
             res = ready.pop(e.loc, None)
             if kind == 'copy' and e.method:
-                ne = Entry(0, here, e.size, e.usize, 1, e.block_size, list(e.blocks), False)
+                ne = Entry(0, here, e.size, e.usize, _method_index(names, _codec(src_slots, e)), e.block_size,
+                           list(e.blocks), False)
                 dst.write(entry_header(ne, expect[e.loc][1]))
                 _copy(src, dst, e.data_start(), e.size)
                 compressed += 1
@@ -491,7 +538,7 @@ def write(pak: Pak, source: str, out: str, method: str | None = 'zlib', level: i
                     expect[e.loc] = ('u', sha)
                 csize = sum(map(len, blocks)) if blocks is not None else None
                 if blocks is not None and csize < usize * (1 - min_gain):
-                    ne = Entry(0, here, csize, usize, 1, min(BLOCK, usize), [len(b) for b in blocks], False)
+                    ne = Entry(0, here, csize, usize, new_index, min(BLOCK, usize), [len(b) for b in blocks], False)
                     c = hashlib.sha1()
                     for b in blocks:
                         c.update(b)
@@ -511,12 +558,16 @@ def write(pak: Pak, source: str, out: str, method: str | None = 'zlib', level: i
             done += e.usize
             if progress:
                 progress(done, total)
-        _write_index(pak, dst, new, METHODS[method] if compressed and method else None)
+        used = {ne.method for ne in new.values() if ne.method}
+        out_names = names if used else [n for n in pak.names if n]
+        if used and max(used) > len(out_names):
+            raise PakError('internal error: compression method index')
+        _write_index(pak, dst, new, out_names)
         size = dst.tell()
     return Result(size, stored, compressed, expect, method)
 
 
-def _write_index(pak: Pak, dst, new: dict[int, Entry], method_name: str | None) -> None:
+def _write_index(pak: Pak, dst, new: dict[int, Entry], names: list[str] | None) -> None:
     remap: dict[int, int] = {}
     enc = []
     pos = 0
@@ -552,10 +603,7 @@ def _write_index(pak: Pak, dst, new: dict[int, Entry], method_name: str | None) 
     dst.write(prim_b)
     dst.write(ph)
     dst.write(dd)
-    names = pak.names
-    if method_name:
-        names = [method_name] + [n for n in pak.names if n and n != method_name]
-    names = (names + [''] * NAME_SLOTS)[:NAME_SLOTS]
+    names = (list(pak.names if names is None else names) + [''] * NAME_SLOTS)[:NAME_SLOTS]
     foot = (pak.guid + bytes([pak.index_encrypted])
             + struct.pack('<IIQQ', MAGIC, pak.version, ioff, len(prim_b)) + hashlib.sha1(prim_b).digest()
             + b''.join(n.encode('latin1').ljust(32, b'\0') for n in names))
@@ -584,10 +632,11 @@ def _verify_job(job: tuple) -> list[str]:
                     continue
                 csha = hashlib.sha1()
                 left = e.usize
+                codec = _codec(method, e)
                 for i, cs in enumerate(e.blocks):
                     raw = f.read(cs)
                     csha.update(raw)
-                    data = _decompress(method, raw, min(e.block_size, left))
+                    data = _decompress(codec, raw, min(e.block_size, left))
                     if len(data) != min(e.block_size, left):
                         raise PakError(f'block {i} has the wrong size')
                     sha.update(data)
@@ -641,11 +690,8 @@ def verify(path: str, original: Pak, expect: dict[int, tuple[str, bytes]], worke
             if new_path.get(nl) != old_path.get(ol):
                 errs.append('path hash index points at a different file than the original')
                 break
-    try:
-        method = pak_method(pak)
-    except PakError as ex:
-        return [str(ex)]
-    if any(e.method not in (0, 1) for e in pak.entries.values()):
+    method = slot_methods(pak.names)
+    if any(e.method and not (e.method <= len(method) and method[e.method - 1]) for e in pak.entries.values()):
         errs.append('unexpected compression method index')
     spans = sorted((e.offset, e.data_start() + e.size) for e in pak.entries.values())
     for (a0, a1), (b0, _) in zip(spans, spans[1:]):
@@ -696,9 +742,9 @@ def find_paks(paths: Iterable[str]) -> list[str]:
 
 def estimate(pak: Pak, source: str, method: str = 'zlib', level: int = 6,
              skip_exts: tuple[str, ...] = SKIP_EXTS, samples: int = 400, seed: int = 1) -> int:
-    skip = skipped_locs(pak, skip_exts)
-    todo = [e for e in pak.ordered() if e.loc not in skip]
-    fixed = sum(HEAD_PLAIN + e.usize for e in pak.entries.values() if e.loc in skip)
+    todo = uncompressed_targets(pak, skip_exts)
+    targets = {e.loc for e in todo}
+    fixed = sum(e.head_size() + e.size for e in pak.entries.values() if e.loc not in targets)
     total = sum(e.usize for e in todo)
     if not total:
         return fixed

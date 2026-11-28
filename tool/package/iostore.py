@@ -18,6 +18,12 @@ COPY_CHUNK = 8 << 20
 
 TYPE_EXPORT_BUNDLE = 1
 TYPE_BULK = 2
+VERSIONS = (3, 6)
+CHUNK_TYPES = {
+    3: {'export': 2, 'bulk': 3, 'optional': 4, 'header': 10},
+    6: {'export': TYPE_EXPORT_BUNDLE, 'bulk': TYPE_BULK, 'optional': 3},
+}
+NONE32 = 0xffffffff
 
 
 class IoStoreError(Exception):
@@ -81,7 +87,7 @@ class Toc:
         h = self.header = Header.unpack(b)
         if h.header_size != HEADER.size or h.block_entry_size != 12:
             raise IoStoreError(f'unsupported .utoc layout (header {h.header_size}, block {h.block_entry_size})')
-        if h.version != 6:
+        if h.version not in VERSIONS:
             raise IoStoreError(f'unsupported .utoc version {h.version}')
         if h.flags & (FLAG_ENCRYPTED | FLAG_SIGNED):
             raise IoStoreError('encrypted or signed containers are not supported')
@@ -118,6 +124,16 @@ class Toc:
         if p != len(b):
             raise IoStoreError(f'.utoc has {len(b) - p} unexpected trailing bytes')
         self.names = _directory_names(self.dir_index)
+
+    def type_id(self, kind: str) -> int:
+        t = CHUNK_TYPES[self.header.version].get(kind)
+        if t is None:
+            raise IoStoreError(f'chunk type {kind} is not known for .utoc version {self.header.version}')
+        return t
+
+    def chunks_of(self, kind: str) -> list[int]:
+        t = self.type_id(kind)
+        return [i for i in range(self.count) if self.ids[i][11] == t]
 
     @property
     def count(self) -> int:
@@ -187,6 +203,40 @@ def _directory_names(b: bytes) -> dict[int, str]:
     return out
 
 
+def prune_directory(b: bytes, remap: dict[int, int]) -> bytes:
+    if not b:
+        return b
+    _, p = _fstring(b, 0)
+    mount = b[:p]
+    nd = struct.unpack_from('<I', b, p)[0]
+    p += 4
+    dirs = [list(struct.unpack_from('<4I', b, p + 16 * i)) for i in range(nd)]
+    p += 16 * nd
+    nf = struct.unpack_from('<I', b, p)[0]
+    p += 4
+    files = [struct.unpack_from('<3I', b, p + 12 * i) for i in range(nf)]
+    p += 12 * nf
+    strings = b[p:]
+    kept = [i for i, f in enumerate(files) if f[2] in remap]
+    new_index = {old: new for new, old in enumerate(kept)}
+    new_files = []
+    for i in kept:
+        name, nxt, user = files[i]
+        while nxt != NONE32 and nxt not in new_index:
+            nxt = files[nxt][1]
+        new_files.append((name, new_index.get(nxt, NONE32), remap[user]))
+    for d in dirs:
+        f = d[3]
+        while f != NONE32 and f not in new_index:
+            f = files[f][1]
+        d[3] = new_index.get(f, NONE32)
+    out = bytearray(mount)
+    out += struct.pack('<I', len(dirs)) + b''.join(struct.pack('<4I', *d) for d in dirs)
+    out += struct.pack('<I', len(new_files)) + b''.join(struct.pack('<3I', *f) for f in new_files)
+    out += strings
+    return bytes(out)
+
+
 def _decompress(method: str, data: bytes, usize: int) -> bytes:
     if method == 'None':
         return data
@@ -241,6 +291,7 @@ class Replacement:
     data: bytes | None = None
     skip_blocks: int = 0
     new_hash: bytes | None = None
+    skip_bytes: int = 0
 
 
 def _align(n: int, a: int) -> int:
@@ -248,10 +299,16 @@ def _align(n: int, a: int) -> int:
 
 
 def write(toc: Toc, ucas_path: str, out_toc: str, out_ucas: str,
-          changes: dict[int, Replacement], progress: Callable[[int, int], None] | None = None) -> None:
+          changes: dict[int, Replacement], progress: Callable[[int, int], None] | None = None,
+          remove: Iterable[int] = ()) -> None:
     h = toc.header
     bs = h.block_size
-    order = sorted(range(toc.count), key=lambda i: (toc.offsets[i], i))
+    gone = set(remove)
+    if gone and (h.seed_count or h.nophash_count):
+        raise IoStoreError('removing chunks from a perfect-hashed container is not supported')
+    if gone & set(changes):
+        raise IoStoreError('a chunk cannot be both replaced and removed')
+    order = sorted((i for i in range(toc.count) if i not in gone), key=lambda i: (toc.offsets[i], i))
     total = sum(toc.stored_size(i) for i in order)
     new_offsets = [0] * toc.count
     new_lengths = list(toc.lengths)
@@ -272,9 +329,9 @@ def write(toc: Toc, ucas_path: str, out_toc: str, out_ucas: str,
             pos += len(raw)
 
         for i in order:
-            rng = toc.block_range(i)
             rep = changes.get(i)
             first = len(blocks)
+            head = 0
             if rep is not None and rep.data is not None:
                 data = rep.data
                 for s in range(0, len(data), bs):
@@ -282,30 +339,34 @@ def write(toc: Toc, ucas_path: str, out_toc: str, out_ucas: str,
                     put(piece, len(piece), 0)
                 new_lengths[i] = len(data)
             else:
-                skip = rep.skip_blocks if rep is not None else 0
+                skip = (rep.skip_bytes or rep.skip_blocks * bs) if rep is not None else 0
+                o, ln = toc.offsets[i], toc.lengths[i]
                 if skip:
-                    if (toc.offsets[i] % bs) or skip >= len(rng):
-                        raise IoStoreError(f'chunk {i}: cannot skip {skip} blocks')
-                for k in list(rng)[skip:]:
+                    if (rep.skip_blocks and o % bs) or skip >= ln:
+                        raise IoStoreError(f'chunk {i}: cannot skip {skip} bytes')
+                start = o + skip
+                head = start % bs
+                for k in range(start // bs, (o + ln - 1) // bs + 1 if ln else start // bs):
                     bl = toc.blocks[k]
                     src.seek(bl.offset)
                     raw = src.read(bl.csize)
                     if len(raw) != bl.csize:
                         raise IoStoreError(f'block {k} runs past the end of the .ucas')
                     put(raw, bl.usize, bl.method)
-                new_lengths[i] = toc.lengths[i] - skip * bs
+                new_lengths[i] = ln - skip
             done += toc.stored_size(i)
             if rep is not None:
                 meta = bytearray(metas[i])
                 if rep.new_hash is None:
                     raise IoStoreError(f'chunk {i}: replacement without a hash')
-                meta[:20] = rep.new_hash
+                meta[:len(rep.new_hash)] = rep.new_hash
                 if rep.data is not None:
                     meta[32] &= ~META_COMPRESSED & 0xff
                 metas[i] = bytes(meta)
-            new_offsets[i] = upos
+            new_offsets[i] = upos + head
             nblk = len(blocks) - first
-            if nblk != (-(-new_lengths[i] // bs) if new_lengths[i] else 0):
+            ln = new_lengths[i]
+            if nblk != ((head + ln - 1) // bs + 1 if ln else 0):
                 raise IoStoreError(f'chunk {i}: block count mismatch')
             upos += nblk * bs
             if progress:
@@ -316,17 +377,23 @@ def write(toc: Toc, ucas_path: str, out_toc: str, out_ucas: str,
     if upos >= 1 << 40:
         raise IoStoreError('container too large')
 
+    keep = [i for i in range(toc.count) if i not in gone]
     nh = Header(**vars(h))
     nh.block_count = len(blocks)
+    nh.entry_count = len(keep)
+    dir_index = toc.dir_index
+    if gone:
+        dir_index = prune_directory(dir_index, {old: new for new, old in enumerate(keep)})
+    nh.dir_index_size = len(dir_index)
     out = bytearray(nh.pack())
-    out += b''.join(toc.ids)
-    for o, ln in zip(new_offsets, new_lengths):
-        out += o.to_bytes(5, 'big') + ln.to_bytes(5, 'big')
+    out += b''.join(toc.ids[i] for i in keep)
+    for i in keep:
+        out += new_offsets[i].to_bytes(5, 'big') + new_lengths[i].to_bytes(5, 'big')
     out += toc.hash_tables
     out += b''.join(_pack_block(b) for b in blocks)
     out += toc.method_names
-    out += toc.dir_index
-    out += b''.join(metas)
+    out += dir_index
+    out += b''.join(metas[i] for i in keep)
     with open(out_toc, 'wb') as f:
         f.write(out)
 

@@ -1,6 +1,6 @@
 # mipdrop: remove top texture mip levels
 
-`mipdrop` removes the top mip levels of every streamed texture and rewrites the `.texpack` files together with their `.toc` (God of War games), the `.pak` files (Resident Evil games and Atomic Heart) or the `.utoc`/`.ucas` container (SILENT HILL f). It was called `shrink` before, and `shrink` still works as an alias.
+`mipdrop` removes the top mip levels of every streamed texture and rewrites the `.texpack` files together with their `.toc` (God of War games), the `.pak` files (Resident Evil games and Atomic Heart) or the `.utoc`/`.ucas` containers (SILENT HILL f, Stellar Blade). It was called `shrink` before, and `shrink` still works as an alias.
 
 Back to the [README](../README.md).
 
@@ -38,7 +38,7 @@ python -m tool verify "<GameDir>"
 | `--in-place` | Replace the files in the game folder |
 | `--out DIR` | Write the results to another folder instead (originals untouched) |
 | `--backup DIR` | With `--in-place`, move the originals here so `restore` can put them back |
-| `--game ah` / `--game gow` / `--game gowr` / `--game re7` / `--game re8` / `--game shf` | Refuse files that belong to another game (default: detect from the files) |
+| `--game ah` / `--game gow` / `--game gowr` / `--game re7` / `--game re8` / `--game shf` / `--game sb` | Refuse files that belong to another game (default: detect from the files) |
 | `--dry-run` | Print the plan without writing anything |
 
 ## Atomic Heart
@@ -189,6 +189,43 @@ How it works:
 - The `.utoc` keeps a BLAKE3 hash of every chunk; the tool recomputes it for every changed chunk. If the `blake3` package is installed it is used, otherwise a NumPy implementation is used.
 - With `--backup`, `SHf-Windows.utoc` and `SHf-Windows.ucas` are moved to the backup folder and `restore` puts both back. Keep `<BackupDir>` on the same drive as the game so the 31 GiB `.ucas` is moved instead of copied; the new files need about 10 GiB of free space.
 - `verify "<GameDir>" --game shf` decompresses every chunk and checks its hash (about 4.5 minutes); `--quick` checks only the layout.
+
+## Stellar Blade
+
+The textures are in `SB\Content\Paks\pakchunk0-WindowsNoEditor.ucas` (52.38 GiB) and two smaller containers (`pakchunk1`, `pakchunk2`), Unreal Engine 4.26 IoStore containers indexed by their `.utoc` files. Given the game folder, the commands work on `SB\Content\Paks`. Install `pyooz` first:
+
+```bat
+python -m pip install pyooz
+python -m tool scan "<GameDir>" --drop 1 --game sb
+python -m tool mipdrop "<GameDir>" --drop 1 --in-place --backup "<BackupDir>" --game sb
+```
+
+| Setting | `pakchunk0` `.ucas` after | Saved (all containers) |
+|---|---|---|
+| **`--drop 1`** | **29.40 GiB** | **23.3 GiB** |
+| `--drop 2` | 23.94 GiB | 28.9 GiB |
+
+The game's own texture settings (**Environment Textures** and **Character Textures**) skip a number of top mips that is counted from the top of what is left: Low skips 3, Medium 2, High 1, Very High 0 (Environment also has a higher setting that skips −1). Removing mips from the files therefore also lowers what every setting shows, and `--drop 2` without anything else looked too blurry in game. So `mipdrop --game sb` also lowers these values by the number of removed levels, in `SB/Config/Windows/WindowsGameUserSettings.ini` inside `pakchunk0-WindowsNoEditor.pak`:
+
+| Setting | Skipped mips, original | after `--drop 1` | after `--drop 2` |
+|---|---|---|---|
+| Low | 3 | 2 (as before) | 1 (as before) |
+| Medium | 2 | 1 (as before) | 0 (as before) |
+| High | 1 | 0 (as before) | −1 (one level below High) |
+| Very High | 0 | −1 (one level below Very High) | −2 (two levels below Very High) |
+
+The desktop app uses `--drop 1`, which keeps Low, Medium and High as they were. `--drop 1` with the adjusted settings has been verified in game; `--drop 2` with the adjusted settings has not. Use `--keep-texture-settings` to leave the settings as they are. Writing `pakchunk0` takes a few minutes on a 16-core PC.
+
+How it works:
+
+- 16,076 of the 16,193 single-texture packages in `pakchunk0` are shrunk. UI textures (110), textures whose top mip lives in a `pakchunk*optional` container (25) and textures with a single streamed mip are left as they are. Baked lightmaps (`*_BuiltData`) are not textures of this kind and are not touched.
+- The top mips are cut from the front of each texture's `.ubulk` chunk. The containers use 1 MiB compression blocks; whole blocks inside the cut are dropped, and when the cut ends inside a block, that block is kept as it is and the chunk starts in the middle of it. Nothing is recompressed, so the part of that one block that is cut away stays on disk (about 0.25 GiB over all textures with `--drop 1`, 1.3 GiB with `--drop 2`).
+- Each shrunk texture's package gets its mip list, first mip and offsets updated and is stored uncompressed, because `pyooz` can only decompress Oodle. The package size in the container header is updated too.
+- The `.utoc` keeps a SHA1 hash of every chunk; the tool recomputes it for every changed chunk.
+- With `--backup`, the `.utoc` and `.ucas` of each changed container are moved to the backup folder and `restore` puts them back. Keep `<BackupDir>` on the same drive as the game so the 52 GiB `.ucas` is moved instead of copied; the new files need about 30 GiB of free space with `--drop 1` (24 GiB with `--drop 2`).
+- With `--backup`, `mipdrop` starts from the backed-up originals, which still hold every voice language. Run `lang` after `mipdrop`, and again if you run `mipdrop` once more.
+- The settings change is computed from the original values: the `.ini` gets a first line `; gow-shrink: texture mip bias lowered by N`, and a later run with another `--drop` resets the values from it. Only that one `.pak` entry changes; the rest of `pakchunk0-WindowsNoEditor.pak` is copied as it is, and with `--backup` the original `.pak` goes to the backup folder too.
+- `verify "<GameDir>" --game sb` decompresses every chunk and checks its hash; `--quick` checks only the layout and the container headers.
 
 ## Notes
 

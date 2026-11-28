@@ -417,7 +417,7 @@ def ui_textures(paks: list[str], progress=None) -> set[str]:
     total = sum(len(j[2]) for j in jobs)
     done = 0
     for path, pak, entries in jobs:
-        method = uepak.pak_method(pak)
+        method = uepak.slot_methods(pak.names)
         with open(path, 'rb') as f:
             for p, e in entries:
                 done += 1
@@ -459,7 +459,7 @@ def is_ui(path: str, s: Summary, ui: set[str] = frozenset()) -> bool:
 def plan_pak(path: str, source: str, policy, progress=None, ui: set[str] = frozenset()) -> PakPlan:
     from ..package import uepak
     pak = uepak.Pak.open(source)
-    method = uepak.pak_method(pak)
+    method = uepak.slot_methods(pak.names)
     files = dict(pak.files())
     changes: dict = {}
     textures = []

@@ -1,6 +1,6 @@
 # Command line: recommended steps by game
 
-The commands below run the recommended steps of each game, the same ones the desktop app runs. The results of each step are in the [README](../README.md#results).
+The commands below run the recommended steps of each game, the same ones the desktop app runs. The results of each step are in the [README](../README.md#what-the-steps-do).
 
 Back to the [README](../README.md).
 
@@ -59,4 +59,13 @@ python -m tool prune "<GameDir>" --game re8
 ```bat
 python -m pip install pyooz numpy
 python -m tool mipdrop "<GameDir>" --drop 2 --in-place --game shf
+```
+
+## Stellar Blade
+
+```bat
+python -m pip install pyooz
+python -m tool mipdrop "<GameDir>" --drop 1 --in-place --game sb
+python -m tool lang "<GameDir>" --keep english --game sb
+python -m tool repack "<GameDir>" --game sb
 ```

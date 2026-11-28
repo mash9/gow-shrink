@@ -321,7 +321,7 @@ class PakPlan:
 def plan_pak(path: str, source: str, policy, progress=None) -> PakPlan:
     from ..package import uepak
     pak = uepak.Pak.open(source)
-    method = uepak.pak_method(pak)
+    method = uepak.slot_methods(pak.names)
     files = dict(pak.files())
     changes: dict = {}
     textures: list[TexturePlan] = []

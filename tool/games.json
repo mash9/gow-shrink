@@ -332,5 +332,111 @@
         }
       ]
     }
+  },
+  "sb": {
+    "title": "Stellar Blade",
+    "exe": "SB.exe",
+    "dirs": {
+      "wad": "SB/Content/Paks",
+      "exec": "SB/Content/Paks"
+    },
+    "app": {
+      "name": "Stellar Blade",
+      "requires": [
+        "ooz=pyooz"
+      ],
+      "install_dirs": [],
+      "steps": [
+        {
+          "id": "mipdrop",
+          "title": "Textures",
+          "text": "Removes the top mip level of every streamed texture (textures used by the UI are left as they are) and lowers the mip bias of the in-game texture quality settings by one. Low, Medium and High texture settings then look as before; Very High loses one level of detail.",
+          "saved": "23.3 GiB",
+          "args": [
+            "mipdrop",
+            "{game_dir}",
+            "--drop",
+            "1",
+            "--in-place"
+          ],
+          "repeat_warning": "Without a backup, running it again removes one more mip level."
+        },
+        {
+          "id": "lang",
+          "title": "Voice languages",
+          "text": "Keeps the Korean voice-over and the languages you tick, and removes the voice and lip-sync packages of the other languages from the .ucas containers.",
+          "saved": "2.4 GiB",
+          "args": [
+            "lang",
+            "{game_dir}",
+            "{choices}"
+          ],
+          "choices": {
+            "arg": "--keep",
+            "empty": "korean",
+            "default": [
+              "english"
+            ],
+            "options": [
+              [
+                "english",
+                "English",
+                0.41
+              ],
+              [
+                "japanese",
+                "Japanese",
+                0.3
+              ],
+              [
+                "chinese(simplified)",
+                "Chinese (Simplified)",
+                0.31
+              ],
+              [
+                "german",
+                "German",
+                0.32
+              ],
+              [
+                "french",
+                "French",
+                0.3
+              ],
+              [
+                "italian",
+                "Italian",
+                0.3
+              ],
+              [
+                "spanish(spain)",
+                "Spanish (Spain)",
+                0.3
+              ],
+              [
+                "spanish(mexico)",
+                "Spanish (Latin America)",
+                0.3
+              ],
+              [
+                "portuguese(brazil)",
+                "Portuguese (Brazil)",
+                0.3
+              ]
+            ]
+          }
+        },
+        {
+          "id": "repack",
+          "title": "Compress .pak files",
+          "text": "Compresses the uncompressed entries of pakchunk0-WindowsNoEditor.pak (mostly the shader archive) with zlib. Entries that are already compressed are left as they are.",
+          "saved": "0.5 GiB",
+          "args": [
+            "repack",
+            "{game_dir}"
+          ]
+        }
+      ]
+    }
   }
 }

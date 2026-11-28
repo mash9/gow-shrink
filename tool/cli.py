@@ -192,9 +192,24 @@ class Progress:
 
 
 
-def _shf_plans(args, policy, use_backup: bool = False):
+ZEN_GAMES = ('shf', 'sb')
+
+
+def _zen_module(game: str):
+    if game == 'sb':
+        from .mipdrop import sb
+        return sb
     from .mipdrop import shf
+    return shf
+
+
+def _zen_home(game: str, utoc: str) -> dict:
+    return {'home': os.path.dirname(os.path.abspath(utoc))} if game == 'sb' else {}
+
+
+def _shf_plans(args, policy, use_backup: bool = False):
     from .package import iostore
+    shf = _zen_module(args.game)
     utocs = shf.find_utocs(args.paths)
     if not utocs:
         raise SystemExit('no .utoc/.ucas containers found in ' + ', '.join(args.paths))
@@ -207,7 +222,7 @@ def _shf_plans(args, policy, use_backup: bool = False):
             if os.path.exists(btoc) and os.path.exists(bcas):
                 src_toc, src_cas = btoc, bcas
         try:
-            plan = shf.make_plan(src_toc, policy, src_cas)
+            plan = shf.make_plan(src_toc, policy, src_cas, **_zen_home(args.game, utoc))
         except (iostore.IoStoreError, OSError) as e:
             print(f'{name}\n  [SKIP] {e}')
             continue
@@ -255,7 +270,7 @@ def _scan_shf(args) -> int:
 
 
 def _verify_shf(args) -> int:
-    from .mipdrop import shf
+    shf = _zen_module(args.game)
     bad = 0
     for utoc in shf.find_utocs(args.paths):
         name = os.path.basename(utoc)
@@ -270,8 +285,34 @@ def _verify_shf(args) -> int:
     return 1 if bad else 0
 
 
+def _replace_container(utoc: str, ucas: str, out_toc: str, out_cas: str, backup: str | None,
+                       manifest: dict | None, record: dict) -> None:
+    if not backup:
+        os.replace(out_cas, ucas)
+        os.replace(out_toc, utoc)
+        print('  replaced (no backup)')
+        return
+    game_dir = os.path.dirname(utoc)
+    name = os.path.basename(utoc)
+    for path in (utoc, ucas):
+        n = os.path.basename(path)
+        bpath = os.path.join(backup, n)
+        if not os.path.exists(bpath):
+            size = os.path.getsize(path)
+            _move(path, bpath)
+            manifest['files'][n] = {'target_dir': game_dir, 'size': size}
+            _save_manifest(backup, manifest)
+            print(f'  original moved to backup: {bpath}')
+    os.replace(out_cas, ucas)
+    os.replace(out_toc, utoc)
+    manifest['files'].setdefault(name, {'target_dir': game_dir,
+                                        'size': os.path.getsize(os.path.join(backup, name))}).update(record)
+    _save_manifest(backup, manifest)
+    print('  replaced')
+
+
 def _mipdrop_shf(args) -> int:
-    from .mipdrop import shf
+    shf = _zen_module(args.game)
     policy = policy_from(args)
     if bool(args.out) == bool(args.in_place):
         raise SystemExit('specify exactly one of --out DIR or --in-place')
@@ -285,13 +326,18 @@ def _mipdrop_shf(args) -> int:
         os.makedirs(args.out, exist_ok=True)
 
     plans = []
+    stacked = False
+    paks_dir = None
     for utoc, plan in _shf_plans(args, policy, use_backup=args.in_place):
         name = os.path.basename(utoc)
         cas_name = os.path.basename(shf.ucas_of(utoc))
         game_dir = os.path.dirname(utoc)
+        paks_dir = paks_dir or game_dir
         print(name)
         if plan.utoc != utoc:
             print(f'  source: using backup ({plan.utoc})')
+        elif plan.changed:
+            stacked = True
         before, after = _shf_report(plan)
         plans.append(plan)
         if args.dry_run:
@@ -314,7 +360,7 @@ def _mipdrop_shf(args) -> int:
             shf.write(plan, out_toc, out_cas, hash_progress=Progress('hashing'),
                       write_progress=Progress('writing'))
             errs = shf.verify(out_toc, out_cas, chunks=[t.package for t in plan.changed],
-                               progress=Progress('checking'))
+                              progress=Progress('checking'), **_zen_home(args.game, utoc))
         except Exception as e:
             errs = [f'{type(e).__name__}: {e}']
         if errs:
@@ -328,28 +374,61 @@ def _mipdrop_shf(args) -> int:
             return 1
         print(f'  output verified ({fmt_size(os.path.getsize(out_cas))})')
 
-        if args.in_place and not args.backup:
-            os.replace(out_cas, shf.ucas_of(utoc))
-            os.replace(out_toc, utoc)
-            print('  replaced (no backup)')
-        elif args.in_place:
-            for n, path in ((name, utoc), (cas_name, shf.ucas_of(utoc))):
-                bpath = os.path.join(args.backup, n)
-                if not os.path.exists(bpath):
-                    size = os.path.getsize(path)
-                    _move(path, bpath)
-                    manifest['files'][n] = {'target_dir': game_dir, 'size': size}
-                    _save_manifest(args.backup, manifest)
-                    print(f'  original moved to backup: {bpath}')
-            os.replace(out_cas, shf.ucas_of(utoc))
-            os.replace(out_toc, utoc)
-            manifest['files'].setdefault(name, {'target_dir': game_dir,
-                                                'size': os.path.getsize(os.path.join(args.backup, name))}
-                                         )['policy'] = vars(policy)
-            _save_manifest(args.backup, manifest)
-            print('  replaced')
+        if args.in_place:
+            _replace_container(utoc, shf.ucas_of(utoc), out_toc, out_cas, args.backup, manifest,
+                               {'policy': vars(policy)})
+    if args.game == 'sb' and paks_dir and not args.keep_texture_settings:
+        if not _sb_texture_settings(args, policy, manifest, paks_dir, stacked):
+            return 1
     _shf_resolutions(plans)
     return 0
+
+
+def _sb_texture_settings(args, policy, manifest, paks_dir: str, stacked: bool) -> bool:
+    from .mipdrop import sb
+    from .package import uepak
+    path = os.path.join(paks_dir, sb.SETTINGS_PAK)
+    print(f'{sb.SETTINGS_PAK} (texture quality settings)')
+    if policy.max_res is not None:
+        print('  [SKIP] --max-res removes a different number of levels per texture; the settings are left as they are')
+        return True
+    try:
+        pak = uepak.Pak.open(path)
+        entry = dict(pak.files()).get(sb.SETTINGS_INI)
+        if entry is None:
+            print(f'  [SKIP] {sb.SETTINGS_INI} is not in the pak')
+            return True
+        with open(path, 'rb') as f:
+            text = uepak.read_entry(f, entry, uepak.slot_methods(pak.names)).decode('utf-8')
+        prev = sb.bias_offset(text)
+        offset = prev + policy.drop if stacked else policy.drop
+        new = sb.adjust_bias(text, offset)
+    except (uepak.PakError, sb.TextureError, OSError, UnicodeDecodeError) as e:
+        print(f'  [FAIL] {e}')
+        return False
+    for key in sb.BIAS_KEYS:
+        old_v = [v for k, v in sb.bias_values(text) if k == key]
+        new_v = [v for k, v in sb.bias_values(new) if k == key]
+        print(f'  {key.split(".")[-1]}: {"/".join(map(str, old_v))} -> {"/".join(map(str, new_v))}')
+    print(f'  mip bias lowered by {offset} in total' + (f' (was {prev})' if prev != offset else ''))
+    if offset == prev:
+        print('  settings already match the texture levels')
+        return True
+    if args.dry_run:
+        return True
+    data = new.encode('utf-8')
+    before = os.path.getsize(path)
+    method = uepak.pak_method(pak)
+
+    def write(out):
+        return uepak.write(pak, path, out, method, changes={entry.loc: uepak.Change(data=data)},
+                           compress_unchanged=False, progress=Progress('writing')).expect
+
+    def verify(out, expect):
+        return uepak.verify(out, pak, expect, progress=Progress('checking', rate=False))
+
+    return _re8_rewrite(path, path, before, before, args, manifest, write=write, verify=verify,
+                        record={'mip_bias_offset': offset})
 
 
 def _re8_targets(paths: list[str], game: str) -> tuple[list[str], list[str]]:
@@ -546,7 +625,7 @@ def _mipdrop_re8(args) -> int:
 def cmd_scan(args) -> int:
     if args.game in KPKA_GAMES:
         return _scan_re8(args)
-    if args.game == 'shf':
+    if args.game in ZEN_GAMES:
         return _scan_shf(args)
     policy = policy_from(args)
     tot_before = tot_after = 0
@@ -576,7 +655,7 @@ def cmd_scan(args) -> int:
 def cmd_verify(args) -> int:
     if args.game in KPKA_GAMES:
         return _verify_re8(args)
-    if args.game == 'shf':
+    if args.game in ZEN_GAMES:
         return _verify_shf(args)
     bad = 0
     for path in tx.iter_texpacks(args.paths):
@@ -799,7 +878,7 @@ def cmd_mipdrop(args) -> int:
         return _mipdrop_ah(args)
     if args.game in KPKA_GAMES:
         return _mipdrop_re8(args)
-    if args.game == 'shf':
+    if args.game in ZEN_GAMES:
         return _mipdrop_shf(args)
     policy = policy_from(args)
     if bool(args.out) == bool(args.in_place):
@@ -1300,7 +1379,80 @@ def _lang_ah(args) -> int:
     return 0
 
 
+def _lang_sb(args) -> int:
+    from .lang import sb as lang_sb
+    from .package import iostore
+    if args.keep_for:
+        raise SystemExit(f'--keep-for is not supported for {GAMES[args.game]}; use --keep <voice language>')
+    utocs = _zen_module(args.game).find_utocs([args.exec_dir])
+    if not utocs:
+        raise SystemExit(f'no .utoc/.ucas containers found in {args.exec_dir}')
+    try:
+        scans = lang_sb.scan(utocs)
+    except (iostore.IoStoreError, OSError) as e:
+        raise SystemExit(f'[FAIL] {e}')
+    installed = lang_sb.installed(scans)
+    if not installed:
+        raise SystemExit(f'no localized voice packages found in the containers under {args.exec_dir}')
+    choices = dict(installed)
+    choices[lang_sb.BASE] = lang_sb.Language()
+    keep = _match_keep([lang_sb.resolve(k) for k in args.keep or []], choices)
+
+    if not keep:
+        print(f'{"voice language":24} {"size":>12} {"packages":>9}  cultures')
+        print(f'{lang_sb.BASE:24} {"-":>12} {"":9}  original voice, always kept')
+        for name, g in installed.items():
+            print(f'{name:24} {fmt_size(g.size)} {g.files:9}  {", ".join(sorted(g.cultures))}')
+        print()
+        print('choose what to keep with --keep <voice language> (repeatable); --keep korean removes all the others')
+        return 0
+
+    unknown = keep - set(choices)
+    if unknown:
+        raise SystemExit(f'not installed: {", ".join(sorted(unknown))}; installed: {", ".join(choices)}')
+    lang_sb.plan_removal(scans, keep)
+    remove = [n for n in installed if n not in keep]
+    freed = sum(cs.saved() for cs in scans)
+    print(f'keep: {", ".join(sorted(keep | {lang_sb.BASE}))}')
+    print(f'remove: {", ".join(remove) or "-"} (about {fmt_size(freed)})')
+    if args.dry_run:
+        return 0
+    if not freed:
+        print('nothing to remove')
+        return 0
+
+    manifest = _backup_manifest(args)
+    for cs in scans:
+        if not cs.remove:
+            continue
+        name = os.path.basename(cs.utoc)
+        print(name)
+        print(f'  {len(cs.remove_packages)} localized packages removed ({fmt_size(cs.saved())})')
+        out_toc, out_cas = cs.utoc + '.gowshrink.tmp', cs.ucas + '.gowshrink.tmp'
+        _check_free(os.path.dirname(cs.utoc), os.path.getsize(cs.ucas) - cs.saved())
+        try:
+            hc = lang_sb.write(cs, out_toc, out_cas, progress=Progress('writing'))
+            errs = _zen_module(args.game).verify(out_toc, out_cas, chunks=[hc], progress=Progress('checking'),
+                                                 home=os.path.dirname(cs.utoc))
+        except Exception as e:
+            errs = [f'{type(e).__name__}: {e}']
+        if errs:
+            print('  [FAIL] output failed verification; original left untouched:')
+            for e in errs[:10]:
+                print(f'    {e}')
+            for p in (out_toc, out_cas):
+                if os.path.exists(p):
+                    os.remove(p)
+            return 1
+        print(f'  output verified ({fmt_size(os.path.getsize(out_cas))})')
+        _replace_container(cs.utoc, cs.ucas, out_toc, out_cas, args.backup, manifest, {'keep': sorted(keep)})
+    print(f'freed about {fmt_size(freed)}' + (' (after deleting the backup folder)' if args.backup else ''))
+    return 0
+
+
 def cmd_lang(args) -> int:
+    if args.game == 'sb':
+        return _lang_sb(args)
     if args.game == 'ah':
         return _lang_ah(args)
     if args.game in KPKA_GAMES:
@@ -1389,11 +1541,22 @@ def cmd_repack(args) -> int:
         except (uepak.PakError, OSError) as e:
             print(f'[SKIP] {name}: {e}')
             continue
-        if uepak.compressed_count(pak):
-            print(f'[SKIP] {name}: already compressed')
+        try:
+            current = uepak.pak_method(pak)
+        except uepak.PakError as e:
+            print(f'[SKIP] {name}: {e}')
+            continue
+        if current and current != args.method:
+            print(f'[SKIP] {name}: compressed with {current}; use --method {current}')
             continue
         before = os.path.getsize(path)
+        if not uepak.uncompressed_targets(pak):
+            print(f'[SKIP] {name}: already compressed' if pak.entries else f'[SKIP] {name}: empty')
+            continue
         after = uepak.estimate(pak, source, args.method, args.level)
+        if uepak.compressed_count(pak) and before - after < max(1 << 20, before // 100):
+            print(f'[SKIP] {name}: already compressed')
+            continue
         print(f'{name}: {len(pak.entries)} entries, {fmt_size(before)} -> about {fmt_size(after)}')
         total_before += before
         total_after += after
@@ -1425,7 +1588,7 @@ def cmd_repack(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m tool", description='Install size reduction tool for Atomic Heart, God of War (2018), God of War Ragnarok, '
-                                             'SILENT HILL f, Resident Evil Village and Resident Evil 7 on PC')
+                                             'SILENT HILL f, Stellar Blade, Resident Evil Village and Resident Evil 7 on PC')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     p = sub.add_parser('scan', help='report estimated sizes after removal')
@@ -1444,6 +1607,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--backup', metavar='DIR',
                    help='backup folder for originals (for --in-place); without it originals are replaced')
     p.add_argument('--dry-run', action='store_true', help='print the plan without writing anything')
+    p.add_argument('--keep-texture-settings', action='store_true',
+                   help="(sb) leave the game's texture quality mip bias as it is")
     add_game_arg(p)
     p.set_defaults(func=cmd_mipdrop)
 
@@ -1478,7 +1643,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--backup', metavar='DIR',
                    help='move removed files and folders (re7/re8: the original .pak files) here instead of deleting them')
     p.add_argument('--dry-run', action='store_true', help='print the plan without changing anything')
-    add_game_arg(p, games_with('lang') + LANG_MODULE_GAMES + REPACK_GAMES)
+    add_game_arg(p, games_with('lang') + LANG_MODULE_GAMES + REPACK_GAMES + ('sb',))
     p.set_defaults(func=cmd_lang)
 
     p = sub.add_parser('prune', help='(re7/re8) remove pak entries that a later patch pak replaces')
@@ -1503,7 +1668,7 @@ def main(argv: list[str] | None = None) -> int:
     add_game_arg(p, REPACK_GAMES)
     p.set_defaults(func=cmd_lightmap)
 
-    p = sub.add_parser('repack', help='(ah) compress the entries of uncompressed Unreal Engine 4 .pak files')
+    p = sub.add_parser('repack', help='(ah, sb) compress the uncompressed entries of Unreal Engine 4 .pak files')
     p.add_argument('paths', nargs='+', help='game folder, .pak files or folders')
     p.add_argument('--method', choices=['zlib', 'lz4'], default='zlib',
                    help='compression method (default: zlib)')
@@ -1513,7 +1678,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--backup', metavar='DIR',
                    help='backup folder for the original .pak files; without it originals are replaced')
     p.add_argument('--dry-run', action='store_true', help='print the estimate without writing anything')
-    add_game_arg(p, REPACK_GAMES)
+    add_game_arg(p, REPACK_GAMES + ('sb',))
     p.set_defaults(func=cmd_repack)
 
     p = sub.add_parser('restore', help='restore originals from the backup')

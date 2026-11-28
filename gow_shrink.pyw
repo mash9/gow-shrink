@@ -63,6 +63,37 @@ class Step:
     args: tuple[str, ...]
     requires: tuple[str, ...]
     repeat_warning: str
+    choice_arg: str = ''
+    choice_empty: str = ''
+    choice_default: tuple[str, ...] = ()
+    choice_options: tuple[tuple[str, str], ...] = ()
+    choice_sizes: tuple[float, ...] = ()
+
+    def saved_for(self, selected) -> str:
+        if not self.choice_sizes:
+            return self.saved
+        gib = sum(size for (v, _), size in zip(self.choice_options, self.choice_sizes) if v not in selected)
+        return f'{gib:.1f} GiB'
+
+    def expand(self, selected) -> list[str]:
+        out = []
+        for a in self.args:
+            if a != '{choices}':
+                out.append(a)
+                continue
+            values = [v for v, _ in self.choice_options if v in selected] or [self.choice_empty]
+            for v in values:
+                out += [self.choice_arg, v]
+        return out
+
+
+def _step(s: dict) -> Step:
+    c = s.get('choices') or {}
+    return Step(s['id'], s['title'], s.get('text', ''), s.get('saved', ''), tuple(s['args']),
+                tuple(s.get('requires', ())), s.get('repeat_warning', ''), c.get('arg', ''), c.get('empty', ''),
+                tuple(c.get('default', ())), tuple((o[0], o[1]) for o in c.get('options', ())),
+                tuple(float(o[2]) for o in c.get('options', ())) if all(len(o) > 2 for o in c.get('options', ()))
+                else ())
 
 
 @dataclass(frozen=True)
@@ -83,9 +114,7 @@ def load_games(path: str = GAMES_FILE) -> list[Game]:
         app = g.get('app')
         if not app:
             continue
-        steps = tuple(Step(s['id'], s['title'], s.get('text', ''), s.get('saved', ''), tuple(s['args']),
-                           tuple(s.get('requires', ())), s.get('repeat_warning', ''))
-                      for s in app.get('steps', ()))
+        steps = tuple(_step(s) for s in app.get('steps', ()))
         games.append(Game(key, app.get('name', g.get('title', key)), g['exe'], tuple(app.get('requires', ())),
                           tuple(os.path.normpath(d) for d in app.get('install_dirs', ())), steps))
     return games
@@ -146,6 +175,15 @@ def missing_modules(names) -> list[str]:
         if importlib.util.find_spec(module) is None:
             out.append(package or module)
     return out
+
+
+def backup_count(path: str) -> int:
+    try:
+        with open(os.path.join(path, 'manifest.json'), encoding='utf-8') as f:
+            files = json.load(f).get('files', {})
+        return len(files) if isinstance(files, dict) else 0
+    except (OSError, ValueError, AttributeError):
+        return 0
 
 
 def find_game_root(path: str, exe: str) -> str | None:
@@ -410,6 +448,15 @@ class App:
         self.use_backup = tk.BooleanVar(value=bool(s.get('backup', False)))
         self.backup_dir = s.get('backup_dir', '')
         self.status = {(g.key, st.id): 'idle' for g in games for st in g.steps}
+        saved_choices = s.get('choices') if isinstance(s.get('choices'), dict) else {}
+        self.choices: dict[str, set[str]] = {}
+        for g in games:
+            for st in g.steps:
+                if st.choice_options:
+                    key = f'{g.key}/{st.id}'
+                    got = saved_choices.get(key)
+                    valid = {v for v, _ in st.choice_options}
+                    self.choices[key] = set(got) & valid if isinstance(got, list) else set(st.choice_default)
 
         self.proc: subprocess.Popen | None = None
         self.running: tuple[str, str] | None = None
@@ -507,6 +554,8 @@ class App:
         self.backup_label.grid(row=1, column=1, sticky='ew')
         self.backup_button = Button(ob, 'Choose folder', self._choose_backup, 'ghost', self.f['small'], height=28)
         self.backup_button.grid(row=0, column=2, rowspan=2, padx=(px(10), 0))
+        self.restore_all_button = Button(ob, 'Restore all', self._restore_all, 'secondary', self.f['small'], height=28)
+        self.restore_all_button.grid(row=0, column=3, rowspan=2, padx=(px(8), 0))
 
         out = tk.Frame(main, bg=C['bg'])
         out.grid(row=5, column=0, sticky='nsew', pady=(px(16), 0))
@@ -607,22 +656,59 @@ class App:
             self._label(body, st.title, 'step').grid(row=r, column=1, sticky='w')
             self._wrap(self._label(body, st.text, 'small', 'muted', anchor='w', justify='left')).grid(
                 row=r + 1, column=1, sticky='ew')
-            if st.saved:
-                self._label(body, f'≈ {st.saved}', 'bold', 'ok').grid(row=r, column=2, rowspan=2, sticky='e',
-                                                                          padx=(px(12), px(12)))
+            saved = None
+            if st.saved or st.choice_sizes:
+                text = st.saved_for(self.choices.get(f'{g.key}/{st.id}', set()))
+                saved = self._label(body, f'≈ {text}', 'bold', 'ok')
+                saved.grid(row=r, column=2, rowspan=2, sticky='e', padx=(px(12), px(12)))
             pill = Pill(body, self.f['small'])
             pill.grid(row=r, column=3, rowspan=2, padx=(0, px(12)))
-            btn = Button(body, 'Run', lambda s=st: self._run_step(s), 'primary', self.f['bold'], min_width=104)
-            btn.grid(row=r, column=4, rowspan=2)
+            actions = tk.Frame(body, bg=body['bg'])
+            actions.grid(row=r, column=4, rowspan=2)
+            btn = Button(actions, 'Run', lambda s=st: self._run_step(s), 'primary', self.f['bold'], min_width=104)
+            btn.pack()
+            restore = Button(actions, 'Restore', lambda s=st: self._restore_step(s), 'ghost', self.f['small'],
+                             height=26, min_width=104)
+            extra = 0
+            if st.choice_options:
+                self._choice_boxes(body, g, st, saved).grid(row=r + 2, column=1, columnspan=4, sticky='ew',
+                                                            pady=(px(8), 0))
+                extra = 1
             bar = Bar(body)
-            bar.grid(row=r + 2, column=1, columnspan=4, sticky='ew', pady=(px(10), 0))
+            bar.grid(row=r + 2 + extra, column=1, columnspan=4, sticky='ew', pady=(px(10), 0))
             info = self._label(body, '', 'small', 'faint', anchor='w')
-            info.grid(row=r + 3, column=1, columnspan=4, sticky='ew', pady=(px(4), 0))
+            info.grid(row=r + 3 + extra, column=1, columnspan=4, sticky='ew', pady=(px(4), 0))
             bar.grid_remove()
             info.grid_remove()
-            self.rows[st.id] = {'num': num, 'pill': pill, 'button': btn, 'bar': bar, 'info': info, 'n': i + 1}
+            self.rows[st.id] = {'num': num, 'pill': pill, 'button': btn, 'bar': bar, 'info': info, 'n': i + 1,
+                                'restore': restore}
             self._paint_row(g.key, st.id)
-            r += 4
+            r += 4 + extra
+
+    def _choice_boxes(self, parent, g: Game, st: Step, saved: tk.Label | None = None) -> tk.Frame:
+        key = f'{g.key}/{st.id}'
+        box = tk.Frame(parent, bg=parent['bg'])
+        cols = 3
+        for c in range(cols):
+            box.columnconfigure(c, weight=1, uniform='choice')
+
+        def toggle(value: str, var: tk.BooleanVar) -> None:
+            chosen = self.choices.setdefault(key, set())
+            if var.get():
+                chosen.add(value)
+            else:
+                chosen.discard(value)
+            if saved is not None:
+                saved.configure(text=f'≈ {st.saved_for(chosen)}')
+            self._save()
+
+        for n, (value, label) in enumerate(st.choice_options):
+            var = tk.BooleanVar(value=value in self.choices.get(key, ()))
+            tk.Checkbutton(box, text=label, variable=var, command=lambda v=value, x=var: toggle(v, x),
+                           font=self.f['small'], fg=C['text'], bg=box['bg'], activebackground=box['bg'],
+                           activeforeground=C['text'], selectcolor=C['button'], highlightthickness=0, bd=0,
+                           anchor='w').grid(row=n // cols, column=n % cols, sticky='w', pady=px(1))
+        return box
 
     def _paint_row(self, game: str, step: str) -> None:
         row = self.rows.get(step)
@@ -653,10 +739,17 @@ class App:
         busy = self.proc is not None
         g = self.games[self.game.get()]
         ok_game = self._ready(g) and not missing_modules(g.requires)
+        restorable = self._restorable(g)
         for st in g.steps:
             row = self.rows.get(st.id)
             if row:
                 row['button'].set_enabled(not busy and ok_game and not missing_modules(st.requires))
+                if st.id in restorable:
+                    row['restore'].pack(pady=(px(4), 0))
+                    row['restore'].set_enabled(not busy)
+                else:
+                    row['restore'].pack_forget()
+        self.restore_all_button.set_enabled(not busy and bool(restorable))
         if '_install' in self.rows:
             self.rows['_install']['button'].set_enabled(not busy)
         self.folder_button.set_enabled(not busy)
@@ -670,12 +763,14 @@ class App:
         if not self.use_backup.get():
             text = 'Off: the original files are replaced or deleted.'
         elif self.backup_dir:
-            text = (f'Originals are moved to {self.backup_dir}\\<game>-<step>. Undo a step with: '
-                    f'python -m tool restore --backup "{self.backup_dir}\\<game>-<step>"')
+            text = (f'Originals are moved to {self.backup_dir}\\<game>-<step>. Press Restore on a step, or '
+                    f'Restore all, to put them back.')
         else:
             text = 'Choose a folder on a drive with enough free space for the originals.'
         self.backup_label.configure(text=text)
         self.backup_button.set_enabled(self.proc is None and self.use_backup.get())
+        if self.rows:
+            self._update_buttons()
         self._save()
 
     def _select(self, key: str) -> None:
@@ -709,7 +804,8 @@ class App:
 
     def _run_step(self, st: Step) -> None:
         g = self.games[self.game.get()]
-        args = [a.replace('{game_dir}', self.dirs[g.key]) for a in st.args] + ['--game', g.key]
+        chosen = self.choices.get(f'{g.key}/{st.id}', set())
+        args = [a.replace('{game_dir}', self.dirs[g.key]) for a in st.expand(chosen)] + ['--game', g.key]
         if self.use_backup.get():
             if not self.backup_dir:
                 self._choose_backup()
@@ -721,8 +817,21 @@ class App:
         else:
             where = 'No backup: the original files are replaced or deleted and cannot be restored.'
         again = ''
+        if st.choice_options:
+            labels = [label for v, label in st.choice_options if v in chosen]
+            again += f'\n\nKept: {", ".join(labels) if labels else "none of the listed choices"}'
         if st.repeat_warning and self.status[(g.key, st.id)] == 'done':
             again = f'\n\nThis step already ran. {st.repeat_warning}'
+        restorable = self._restorable(g)
+        later = [s for s in g.steps[g.steps.index(st) + 1:] if s.id in restorable]
+        if later:
+            names = ', '.join(f'"{s.title}"' for s in later)
+            if not messagebox.askyesno(f'{g.name} · {st.title}',
+                                       f'{names} already ran after this step and its backup is still there. '
+                                       f'Running this step again can undo those steps, and restoring them later '
+                                       f'would bring back old files.\n\nRestore {names} first (recommended), or '
+                                       f'continue anyway?', icon='warning', default='no'):
+                return
         if not messagebox.askyesno(f'{g.name} · {st.title}',
                                    f'{st.text}\n\n{where}{again}\n\nStart the game after this step to check it. '
                                    f'Continue?', icon='warning'):
@@ -751,6 +860,69 @@ class App:
             self._set_status(f'Failed (exit code {code}).', 'err')
             if not self.console_open:
                 self._toggle_console()
+
+    def _backup_of(self, g: Game, st: Step) -> str:
+        return os.path.join(self.backup_dir, f'{g.key}-{st.id}') if self.backup_dir else ''
+
+    def _restorable(self, g: Game) -> list[str]:
+        return [st.id for st in g.steps if self._backup_of(g, st) and backup_count(self._backup_of(g, st))]
+
+    def _restore_step(self, st: Step) -> None:
+        g = self.games[self.game.get()]
+        restorable = self._restorable(g)
+        later = [s for s in g.steps[g.steps.index(st) + 1:] if s.id in restorable]
+        if later:
+            messagebox.showinfo(f'{g.name} · Restore',
+                                f'Restore "{later[-1].title}" first.\n\nSteps are undone from the last one, '
+                                f'because a later step started from the files the earlier step made. '
+                                f'Use "Restore all" to undo every step in the right order.')
+            return
+        path = self._backup_of(g, st)
+        if not messagebox.askyesno(f'{g.name} · Restore {st.title}',
+                                   f'Put back the files that "{st.title}" changed, from:\n{path}\n\n'
+                                   f'Close the game first. Continue?', icon='warning'):
+            return
+        self._run_restores(g, [st])
+
+    def _restore_all(self) -> None:
+        g = self.games[self.game.get()]
+        restorable = self._restorable(g)
+        steps = [st for st in reversed(g.steps) if st.id in restorable]
+        if not steps:
+            return
+        names = ', '.join(f'"{st.title}"' for st in steps)
+        if not messagebox.askyesno(f'{g.name} · Restore all',
+                                   f'Undo {names} in this order and put the original files back from:\n'
+                                   f'{self.backup_dir}\n\nClose the game first. Continue?', icon='warning'):
+            return
+        self._run_restores(g, steps)
+
+    def _run_restores(self, g: Game, steps: list[Step]) -> None:
+        queue_ = list(steps)
+
+        def next_step(code: int = 0) -> None:
+            if code != 0:
+                self._set_status(f'Restore failed (exit code {code}).', 'err')
+                if not self.console_open:
+                    self._toggle_console()
+                self._refresh_nav()
+                return
+            if not queue_:
+                self._set_status('Restored. The changed files are back to how they were before those steps.', 'ok')
+                self._refresh_nav()
+                self._update_buttons()
+                return
+            st = queue_.pop(0)
+
+            def done(c: int, st=st) -> None:
+                if c == 0:
+                    self.status[(g.key, st.id)] = 'idle'
+                    self._paint_row(g.key, st.id)
+                next_step(c)
+
+            self._spawn(tool_command(['restore', '--backup', self._backup_of(g, st)]), f'Restoring {st.title}', done)
+
+        next_step()
 
     def _install(self, names: list[str]) -> None:
         def done(code: int) -> None:
@@ -869,7 +1041,7 @@ class App:
 
     def _save(self) -> None:
         save_settings({'game': self.game.get(), 'dirs': self.dirs, 'backup': self.use_backup.get(),
-                       'backup_dir': self.backup_dir})
+                       'backup_dir': self.backup_dir, 'choices': {k: sorted(v) for k, v in self.choices.items()}})
 
     def _close(self) -> None:
         if self.proc is not None:

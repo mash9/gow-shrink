@@ -1,6 +1,6 @@
 # lang: remove unused voice languages
 
-`lang` lists the installed voice languages and removes all but the ones you keep. It works on Atomic Heart, God of War (2018), God of War Ragnarök, Resident Evil 7 biohazard and Resident Evil Village.
+`lang` lists the installed voice languages and removes all but the ones you keep. It works on Atomic Heart, God of War (2018), God of War Ragnarök, Resident Evil 7 biohazard, Resident Evil Village and Stellar Blade.
 
 Back to the [README](../README.md).
 
@@ -15,6 +15,7 @@ Per-language audio lives in these places (relative to `exec\` for the God of War
 | God of War Ragnarök | `sound\pc_le\<language>.0.audiopack` + `.audiopack.toc`, `wad\pc_le\soundbanks\<language>\` | 13 (adds `arabic`), 1.28-1.47 GiB each | about 16.7 GiB |
 | Resident Evil 7 biohazard | Wwise packs and banks inside the `.pak` files (see below) | 6, 0.35-0.39 GiB each | about 1.8 GiB |
 | Resident Evil Village | Wwise packs and banks inside the `.pak` files (see below) | 9, 0.40-0.42 GiB each | about 3.3 GiB |
+| Stellar Blade | Localized packages inside the `.utoc`/`.ucas` containers (see below) | 9 besides Korean, 0.30-0.41 GiB each | about 2.4 GiB (English and Korean) |
 
 The locations and the voice id -> language name mapping for each game are in `tool/games.json`. Other `.audiopack` files (`root`, `valhalla`, and the per-area ones such as `010_midgard1a`) are never touched.
 
@@ -95,6 +96,32 @@ python -m tool lang "<GameDir>" --keep english --backup "<BackupDir>\lang" --gam
 - `--keep-for` is not available, because the game has no text -> voice language table in its files.
 - Only the paks that contain voice data are rewritten, and the rest of each pak is copied byte for byte. With `--backup`, the original paks are moved to the backup folder and `restore` puts them back.
 - `mipdrop` and `lang` change the same paks. Use a separate backup folder for each step (for example `<BackupDir>\mipdrop` and `<BackupDir>\lang`), run `mipdrop` first, and restore in reverse order (`lang` first). `prune` ([guide/prune.md](prune.md)) rewrites the same paks too; run it after both and restore it first. Running `mipdrop` again with its backup rebuilds the paks from the originals and brings the voices back; run `lang` again afterwards.
+
+## Stellar Blade
+
+Keeping only the Korean voice (`--keep korean`) has been verified in game, together with `mipdrop --drop 1` and `repack`.
+
+The voices are Unreal Engine `SoundWave` packages inside the IoStore containers. The Korean voice-over is the original audio at the normal package paths and is always kept. The other languages are localized copies in `SB/Content/L10N/<culture>/` (voice lines and lip-sync face animations), mostly in `pakchunk0` with a few in the DLC containers `pakchunk2` and `pakchunk3`:
+
+| Voice language | Cultures | Size |
+|---|---|---|
+| `english` | `en`, `en-GB` (`en-GB` holds only lip-sync) | 0.41 GiB |
+| `german` | `de` | 0.32 GiB |
+| `chinese(simplified)` | `zh-Hans` | 0.31 GiB |
+| `japanese`, `french`, `italian`, `spanish(spain)`, `spanish(mexico)`, `portuguese(brazil)` | `ja`, `fr`, `it`, `es`, `es-MX`, `pt-BR` | 0.30 GiB each |
+
+```bat
+python -m tool lang "<GameDir>" --game sb
+python -m tool lang "<GameDir>" --keep english --backup "<BackupDir>\lang" --game sb
+python -m tool lang "<GameDir>" --keep english --keep japanese --game sb
+python -m tool lang "<GameDir>" --keep korean --game sb
+```
+
+- `--keep` takes the names above or culture codes (`en`, `ja`, `zh-Hans`, ...) and can be repeated. `--keep korean` removes every localized language. `--keep-for` is not available.
+- In the desktop app, tick the languages to keep on the voice step; with nothing ticked only Korean is kept.
+- The removed packages are taken out of the `.utoc`, the `.ucas` and the container header (package list and the culture map that points the game at localized packages); the rest of each container is copied as is. No other package imports them.
+- `lang` always starts from the containers in the game folder, so it keeps what `mipdrop` has changed. To bring a removed language back, use `restore`.
+- If the game is set to a removed voice language, it falls back to the Korean voice. Keep the game's voice language set to one you keep.
 
 ## Notes
 
